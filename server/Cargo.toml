@@ -1,0 +1,21 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde.workspace = true
+rand.workspace = true
+uuid.workspace = true
+lazy_static.workspace = true
+clap.workspace = true
+tokio.workspace = true
+num_cpus.workspace = true
+redis.workspace = true
+serde_json.workspace = true
+colored.workspace = true
+tokio-websockets.workspace = true
+futures-util.workspace = true
+http.workspace = true
+sha3.workspace = true
+anyhow.workspace = true

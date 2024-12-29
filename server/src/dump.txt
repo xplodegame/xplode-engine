@@ -1,0 +1,24 @@
+// take two input numbers
+    let mut input = String::new();
+
+    println!("Enter first num");
+    std::io::stdin().read_line(&mut input).expect("Failed to read input");
+    let first: u64 = input.trim().parse()?;
+
+    input.clear();
+    println!("Enter second num");
+    std::io::stdin().read_line(&mut input).expect("Failed to read input");
+
+    let second: u64 = input.trim().parse()?;
+
+
+
+    let mut distributed_seed_gen = DistributedSeedGen::new(first);
+    distributed_seed_gen.update_seed_hash(second);
+    let seed = distributed_seed_gen.seed();
+
+    let bomb_coordinates = get_bomb_coords(seed, 5);
+
+    println!("Bomb coords:: {:?}", bomb_coordinates);
+
+    Ok(())
