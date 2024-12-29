@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "server",
+    "wallet"
+]
+
+# Optional: You can specify workspace-wide dependencies
+[workspace.dependencies]
+rand = "0.8.5"
+sha3 = "0.10.8"
+uuid = { version = "1.11.0", features = ["v4"] }
+lazy_static = "1.4.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+num_cpus = "1.16.0"
+redis = { version = "0.27.6", features = ["tokio-comp"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+colored = "2.0"
+tokio-websockets = { version = "0.10.1", features = [
+    "client",
+    "server",
+    "sha1_smol",
+    "fastrand"
+] }
+futures-util = "0.3.31"
+http = "1.2.0"
+anyhow = "1.0.7"
+reqwest = { version = "0.11", features = ["json"] }
+actix-web = "4.9.0"
+dotenv = "0.15"
+actix-cors = "0.7"
+hmac = "0.12.1"
+sha2 = "0.10.8"
+hex = "0.4.3"
+sqlx = { version = "0.6", features = ["sqlite", "runtime-tokio-rustls"] }
