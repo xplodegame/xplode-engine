@@ -2,12 +2,21 @@ use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use db::establish_connection;
 use dotenv::dotenv;
+use models::User;
 use razorpay_client::{RazorpayClient, VerifyPaymentRequest};
 use serde::Deserialize;
 use std::env;
 
 mod db;
+mod models;
 mod razorpay_client;
+
+#[derive(Deserialize)]
+struct UserDetailsRequest {
+    name: String,
+    email: String,
+    clerk_id: String,
+}
 
 #[derive(Deserialize)]
 struct DepositRequest {
@@ -20,6 +29,54 @@ struct DepositRequest {
 struct WithdrawRequest {
     user_id: Option<u32>,
     amount: u32,
+}
+
+#[actix_web::post("/user-details")]
+async fn user_details(
+    req: web::Json<UserDetailsRequest>,
+    pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
+) -> impl Responder {
+    println!("Got a request");
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("failed to get connection from the pool");
+
+    // Check if the user already exists
+    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+        .bind(&req.email)
+        .fetch_optional(&mut conn)
+        .await
+        .expect("Error fetching user");
+
+    match existing_user {
+        Some(user) => {
+            // User exists, return their details
+            HttpResponse::Ok().json(user)
+        }
+        None => {
+            // User does not exist, create a new user
+            let new_user = sqlx::query(
+                "INSERT INTO users (clerk_id, email, name, wallet_amount) VALUES (?, ?, ?, ?)",
+            )
+            .bind(&req.clerk_id)
+            .bind(&req.email)
+            .bind(&req.name)
+            .bind(0) // Assuming new users start with a wallet amount of 0
+            .execute(&mut conn)
+            .await
+            .expect("Error creating new user");
+
+            // Fetch the newly created user to return their details
+            let created_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+                .bind(&req.email)
+                .fetch_one(&mut conn)
+                .await
+                .expect("Error fetching newly created user");
+
+            HttpResponse::Created().json(created_user) // Return the created user details
+        }
+    }
 }
 
 #[actix_web::post("/deposit")]
@@ -173,6 +230,7 @@ async fn main() -> std::io::Result<()> {
             .service(deposit)
             .service(withdraw)
             .service(verify_payment)
+            .service(user_details)
     })
     .bind("127.0.0.1:8080")?
     .run()
