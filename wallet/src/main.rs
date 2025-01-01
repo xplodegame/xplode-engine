@@ -3,13 +3,14 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use db::establish_connection;
 use dotenv::dotenv;
 use models::User;
-use razorpay_client::{RazorpayClient, VerifyPaymentRequest};
+
+use razorpay::razorpay_client::{RazorpayClient, VerifyPaymentRequest};
 use serde::Deserialize;
 use std::env;
 
 mod db;
 mod models;
-mod razorpay_client;
+mod razorpay;
 
 #[derive(Deserialize)]
 struct UserDetailsRequest {
@@ -20,14 +21,14 @@ struct UserDetailsRequest {
 
 #[derive(Deserialize)]
 struct DepositRequest {
-    user_id: Option<u32>,
+    user_id: u32,
     amount: u32,
     currency: String,
 }
 
 #[derive(Deserialize)]
 struct WithdrawRequest {
-    user_id: Option<u32>,
+    user_id: u32,
     amount: u32,
 }
 
@@ -85,32 +86,30 @@ async fn deposit(
     client: web::Data<RazorpayClient>,
     pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
 ) -> impl Responder {
-    println!("Request arrived");
+    println!("Deposit request arrived");
 
-    let user_id = req.user_id.expect("User id not present in request");
     let mut conn = pool
         .acquire()
         .await
         .expect("Failed to get a connection from the pool");
-    match client
-        .create_order(req.user_id, req.amount, &req.currency)
+
+    let user: User = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(&req.user_id)
+        .fetch_one(&mut conn)
         .await
-    {
+        .expect("Error fetching user");
+
+    match client.create_order(req.amount, &req.currency, &user).await {
         Ok(order) => {
             // Fetch the user's current wallet balance
-            let current_balance: (u32,) =
-                sqlx::query_as("SELECT wallet_amount FROM users WHERE id = ?")
-                    .bind(user_id)
-                    .fetch_one(&mut conn)
-                    .await
-                    .expect("Error loading user");
+            let current_balance = user.wallet_amount;
 
-            let new_balance = current_balance.0 + req.amount;
+            let new_balance = current_balance + (req.amount as i32);
 
             // Update the user's wallet balance
             sqlx::query("UPDATE users SET wallet_amount = ? WHERE id = ?")
                 .bind(new_balance)
-                .bind(user_id)
+                .bind(req.user_id)
                 .execute(&mut conn)
                 .await
                 .expect("Error updating user wallet");
@@ -118,7 +117,7 @@ async fn deposit(
             sqlx::query(
                 "INSERT INTO transactions (user_id, amount, transaction_type) VALUES (?, ?, ?)",
             )
-            .bind(user_id)
+            .bind(req.user_id)
             .bind(req.amount)
             .bind("deposit")
             .execute(&mut conn)
@@ -168,11 +167,9 @@ async fn withdraw(
         .await
         .expect("Failed to get a connection from the pool");
 
-    let user_id = req.user_id.unwrap_or_else(|| 1);
-
     // Fetch the user's current wallet balance
     let current_balance: (u32,) = sqlx::query_as("SELECT wallet_amount FROM users WHERE id = ?")
-        .bind(user_id)
+        .bind(req.user_id)
         .fetch_one(&mut conn)
         .await
         .expect("Error loading user");
@@ -187,14 +184,14 @@ async fn withdraw(
     // Update the user's wallet balance
     sqlx::query("UPDATE users SET wallet_amount = ? WHERE id = ?")
         .bind(new_balance)
-        .bind(user_id)
+        .bind(req.user_id)
         .execute(&mut conn)
         .await
         .expect("Error updating user wallet");
 
     // Record the transaction
     sqlx::query("INSERT INTO transactions (user_id, amount, transaction_type) VALUES (?, ?, ?)")
-        .bind(user_id)
+        .bind(req.user_id)
         .bind(req.amount)
         .bind("withdrawal")
         .execute(&mut conn)
