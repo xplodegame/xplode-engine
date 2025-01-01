@@ -5,12 +5,28 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::models::User;
+
+use super::models::CustomerDetails;
+
 const RAZORPAY_API_URL: &str = "https://api.razorpay.com/v1";
 
 #[derive(Serialize)]
 pub struct CreateOrderRequest {
-    pub amount: u32, // Amount in paise
+    /// The amount for which the order was created, in currency subunits.
+    pub amount: u32, // Using f64 to accommodate both number and string types
+    /// ISO code for the currency in which you want to accept the payment.
     pub currency: String,
+    /// Receipt number that corresponds to this order, set for your internal reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<String>,
+
+    /// The payment method used to make the payment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Details of the bank account that the customer has provided at the time of registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customer_details: Option<CustomerDetails>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,6 +34,12 @@ pub struct CreateOrderResponse {
     pub id: String,
     pub currency: String,
     pub amount: u32,
+    /// The payment method used to make the payment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Details of the bank account that the customer has provided at the time of registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customer_details: Option<CustomerDetails>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,14 +73,21 @@ impl RazorpayClient {
 
     pub async fn create_order(
         &self,
-        user_id: Option<u32>,
         amount: u32,
         currency: &str,
+        user: &User,
     ) -> Result<CreateOrderResponse, reqwest::Error> {
         println!("Creating order");
         let request = CreateOrderRequest {
             amount,
             currency: currency.to_string(),
+            receipt: None,
+            method: None,
+            customer_details: Some(CustomerDetails {
+                name: user.name.clone(),
+                contact: None,
+                email: user.email.clone(),
+            }),
         };
         let response = self
             .client
