@@ -1,9 +1,8 @@
 use clap::{Parser, Subcommand};
 // use game::GameManager;
-use game_ws::{GameClient, GameServer};
+use game_ws::GameServer;
 
 mod board;
-mod db;
 mod game;
 mod game_ws;
 mod player;
@@ -35,10 +34,11 @@ async fn main() -> anyhow::Result<()> {
 
             game_server.start("127.0.0.1:3000").await?;
         }
-        Commands::Client => {
-            let client = GameClient::new("ws://127.0.0.1:3000").await?;
-            client.run_client().await?;
-        }
+        // Commands::Client => {
+        //     let client = GameClient::new("ws://127.0.0.1:3000").await?;
+        //     client.run_client().await?;
+        // }
+        _ => {}
     }
 
     Ok(())
