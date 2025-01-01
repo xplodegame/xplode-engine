@@ -87,7 +87,7 @@ async fn deposit(
 ) -> impl Responder {
     println!("Request arrived");
 
-    let user_id = req.user_id.unwrap_or_else(|| 1);
+    let user_id = req.user_id.expect("User id not present in request");
     let mut conn = pool
         .acquire()
         .await
