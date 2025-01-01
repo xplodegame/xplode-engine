@@ -4,7 +4,6 @@ use futures_util::{
     SinkExt,
 };
 
-use http::Uri;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::Arc};
 use tokio::{
@@ -23,25 +22,35 @@ pub enum GameState {
         game_id: String,
         creator: Player,
         board: Board,
+        single_bet_size: u32,
     },
     RUNNING {
         game_id: String,
         players: Vec<Player>,
         board: Board,
         turn_idx: usize,
+        single_bet_size: u32,
     },
     FINISHED {
         game_id: String,
         winner_idx: usize,
         board: Board,
         players: Vec<Player>,
+        single_bet_size: u32,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameMessage {
-    Play { player_id: String },
-    MakeMove { game_id: String, x: usize, y: usize },
+    Play {
+        player_id: String,
+        single_bet_size: u32,
+    },
+    MakeMove {
+        game_id: String,
+        x: usize,
+        y: usize,
+    },
     GameUpdate(GameState),
     Error(String),
     Dummy,
@@ -154,7 +163,10 @@ impl GameConnectionHandler {
 
             println!("Game Message: {:?}", message);
             match message {
-                GameMessage::Play { player_id } => {
+                GameMessage::Play {
+                    player_id,
+                    single_bet_size,
+                } => {
                     println!("Hello Play message received");
                     let games_read = self.games.read().await;
 
@@ -175,6 +187,7 @@ impl GameConnectionHandler {
                             players,
                             board: board.clone(),
                             turn_idx: 0,
+                            single_bet_size,
                         };
 
                         {
@@ -205,6 +218,7 @@ impl GameConnectionHandler {
                             game_id: game_id.clone(),
                             creator: player,
                             board,
+                            single_bet_size,
                         };
 
                         println!("Taking the write lock");
@@ -245,6 +259,7 @@ impl GameConnectionHandler {
                                 players,
                                 board,
                                 turn_idx,
+                                single_bet_size,
                                 ..
                             } => {
                                 // Check if it's the correct player's turn
@@ -257,6 +272,7 @@ impl GameConnectionHandler {
                                         winner_idx: winner,
                                         board: board.clone(),
                                         players: players.clone(),
+                                        single_bet_size: single_bet_size.clone(),
                                     };
                                 } else {
                                     // Switch turns
@@ -291,6 +307,7 @@ impl GameConnectionHandler {
                         players,
                         board,
                         turn_idx,
+                        single_bet_size,
                     } => {
                         let player_streams =
                             self.player_streams.read().await.get(&game_id).cloned();
@@ -301,6 +318,7 @@ impl GameConnectionHandler {
                                 players,
                                 board,
                                 turn_idx,
+                                single_bet_size,
                             });
 
                             player_streams.iter().for_each(|stream| {
@@ -326,6 +344,7 @@ impl GameConnectionHandler {
                         winner_idx,
                         board,
                         players,
+                        single_bet_size,
                     } => {
                         let player_streams =
                             self.player_streams.read().await.get(&game_id).cloned();
@@ -336,6 +355,7 @@ impl GameConnectionHandler {
                                 winner_idx,
                                 board,
                                 players,
+                                single_bet_size,
                             });
 
                             player_streams.iter().for_each(|stream| {
@@ -367,138 +387,139 @@ impl GameConnectionHandler {
     }
 }
 
-// Client-side example (pseudo-code)
-pub struct GameClient {
-    ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+// // Client-side example (pseudo-code)
+// pub struct GameClient {
+//     ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
 
-    pub player_id: String,
-}
+//     pub player_id: String,
+// }
 
-impl GameClient {
-    pub async fn new(url: &str) -> anyhow::Result<GameClient> {
-        let uri = Uri::try_from(url)?;
+// impl GameClient {
+//     pub async fn new(url: &str) -> anyhow::Result<GameClient> {
+//         let uri = Uri::try_from(url)?;
 
-        let (client, _) = ClientBuilder::from_uri(uri).connect().await?;
-        Ok(GameClient {
-            ws_stream: client,
-            player_id: Uuid::new_v4().to_string(),
-        })
-    }
+//         let (client, _) = ClientBuilder::from_uri(uri).connect().await?;
+//         Ok(GameClient {
+//             ws_stream: client,
+//             player_id: Uuid::new_v4().to_string(),
+//         })
+//     }
 
-    pub async fn run_client(self) -> anyhow::Result<()> {
-        // Split the WebSocket stream first
-        let (mut ws_write, mut ws_read) = self.ws_stream.split();
-        let (tx, mut rx) = mpsc::channel(100);
+//     pub async fn run_client(self) -> anyhow::Result<()> {
+//         // Split the WebSocket stream first
+//         let (mut ws_write, mut ws_read) = self.ws_stream.split();
+//         let (tx, mut rx) = mpsc::channel(100);
 
-        // Spawn message handler task first to ensure we don't miss any messages
-        let msg_handler = tokio::spawn({
-            let tx_clone = tx.clone();
-            async move {
-                while let Some(msg) = ws_read.next().await {
-                    match msg {
-                        Ok(message) => {
-                            println!("Received message from server");
-                            match serde_json::from_slice(message.as_payload()) {
-                                Ok(response) => {
-                                    if let Err(e) = tx_clone.send(response).await {
-                                        eprintln!("Error sending to channel: {}", e);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("Error deserializing message: {}", e);
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("WebSocket error: {}", e);
-                            break;
-                        }
-                    }
-                }
-                println!("Message handler loop ended");
-                anyhow::Ok(())
-            }
-        });
+//         // Spawn message handler task first to ensure we don't miss any messages
+//         let msg_handler = tokio::spawn({
+//             let tx_clone = tx.clone();
+//             async move {
+//                 while let Some(msg) = ws_read.next().await {
+//                     match msg {
+//                         Ok(message) => {
+//                             println!("Received message from server");
+//                             match serde_json::from_slice(message.as_payload()) {
+//                                 Ok(response) => {
+//                                     if let Err(e) = tx_clone.send(response).await {
+//                                         eprintln!("Error sending to channel: {}", e);
+//                                         break;
+//                                     }
+//                                 }
+//                                 Err(e) => {
+//                                     eprintln!("Error deserializing message: {}", e);
+//                                     continue;
+//                                 }
+//                             }
+//                         }
+//                         Err(e) => {
+//                             eprintln!("WebSocket error: {}", e);
+//                             break;
+//                         }
+//                     }
+//                 }
+//                 println!("Message handler loop ended");
+//                 anyhow::Ok(())
+//             }
+//         });
 
-        // Now that the message handler is set up, send the initial game message
+//         // Now that the message handler is set up, send the initial game message
 
-        let play_msg = GameMessage::Play {
-            player_id: self.player_id.clone(),
-        };
-        ws_write
-            .send(Message::binary(serde_json::to_vec(&play_msg)?))
-            .await?;
-        println!("GameMessage::Play message sent");
+//         let play_msg = GameMessage::Play {
+//             player_id: self.player_id.clone(),
 
-        // Main game loop
-        tokio::select! {
-            result = msg_handler => {
-                if let Err(e) = result {
-                    eprintln!("Message handler error: {}", e);
-                }
-                println!("WebSocket connection closed");
-            }
-            result = async {
-                while let Some(message) = rx.recv().await {
-                    println!("Processing message: {:?}", message);
-                    match &message {
-                        GameMessage::GameUpdate(game_state) => {
-                            match game_state {
-                                GameState::RUNNING { players, board, turn_idx, game_id } => {
-                                    println!("\nCurrent game state:");
-                                    board.display();
-                                    println!("Game ID: {}", game_id);
-                                    if players[*turn_idx].id == self.player_id {
-                                        println!("\nYour turn! Enter coordinates (x y):");
-                                        let mut input = String::new();
-                                        io::stdin().read_line(&mut input)?;
-                                        let coords: Vec<&str> = input.trim().split_whitespace().collect();
+//         };
+//         ws_write
+//             .send(Message::binary(serde_json::to_vec(&play_msg)?))
+//             .await?;
+//         println!("GameMessage::Play message sent");
 
-                                        if coords.len() == 2 {
-                                            if let (Ok(x), Ok(y)) = (coords[0].parse(), coords[1].parse()) {
-                                                let move_msg = GameMessage::MakeMove {
-                                                    game_id: game_id.clone(),
-                                                    x,
-                                                    y,
-                                                };
-                                                println!("Sending move: {:?}", move_msg);
-                                                ws_write
-                                                    .send(Message::binary(serde_json::to_vec(&move_msg)?))
-                                                    .await?;
-                                            } else {
-                                                println!("Invalid coordinates! Please enter numbers.");
-                                            }
-                                        } else {
-                                            println!("Invalid input! Please enter two numbers separated by space.");
-                                        }
-                                    } else {
-                                        println!("\nWaiting for other player's move...");
-                                    }
-                                }
-                                GameState::WAITING { game_id, .. } => {
-                                    println!("Waiting for other player to join...");
-                                    println!("Game ID: {}", game_id);
-                                }
-                                GameState::FINISHED { winner_idx, board, players, .. } => {
-                                    println!("\nGame Over!");
-                                    board.display();
-                                    println!("Winner: Player {} ({})", winner_idx + 1, players[*winner_idx].id);
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        GameMessage::Error(err) => {
-                            eprintln!("Game error: {}", err);
-                        }
-                        _ => {}
-                    }
-                }
-                Ok::<(), anyhow::Error>(())
-            } => {}
-        }
+//         // Main game loop
+//         tokio::select! {
+//             result = msg_handler => {
+//                 if let Err(e) = result {
+//                     eprintln!("Message handler error: {}", e);
+//                 }
+//                 println!("WebSocket connection closed");
+//             }
+//             result = async {
+//                 while let Some(message) = rx.recv().await {
+//                     println!("Processing message: {:?}", message);
+//                     match &message {
+//                         GameMessage::GameUpdate(game_state) => {
+//                             match game_state {
+//                                 GameState::RUNNING { players, board, turn_idx, game_id } => {
+//                                     println!("\nCurrent game state:");
+//                                     board.display();
+//                                     println!("Game ID: {}", game_id);
+//                                     if players[*turn_idx].id == self.player_id {
+//                                         println!("\nYour turn! Enter coordinates (x y):");
+//                                         let mut input = String::new();
+//                                         io::stdin().read_line(&mut input)?;
+//                                         let coords: Vec<&str> = input.trim().split_whitespace().collect();
 
-        Ok(())
-    }
-}
+//                                         if coords.len() == 2 {
+//                                             if let (Ok(x), Ok(y)) = (coords[0].parse(), coords[1].parse()) {
+//                                                 let move_msg = GameMessage::MakeMove {
+//                                                     game_id: game_id.clone(),
+//                                                     x,
+//                                                     y,
+//                                                 };
+//                                                 println!("Sending move: {:?}", move_msg);
+//                                                 ws_write
+//                                                     .send(Message::binary(serde_json::to_vec(&move_msg)?))
+//                                                     .await?;
+//                                             } else {
+//                                                 println!("Invalid coordinates! Please enter numbers.");
+//                                             }
+//                                         } else {
+//                                             println!("Invalid input! Please enter two numbers separated by space.");
+//                                         }
+//                                     } else {
+//                                         println!("\nWaiting for other player's move...");
+//                                     }
+//                                 }
+//                                 GameState::WAITING { game_id, .. } => {
+//                                     println!("Waiting for other player to join...");
+//                                     println!("Game ID: {}", game_id);
+//                                 }
+//                                 GameState::FINISHED { winner_idx, board, players, .. } => {
+//                                     println!("\nGame Over!");
+//                                     board.display();
+//                                     println!("Winner: Player {} ({})", winner_idx + 1, players[*winner_idx].id);
+//                                     return Ok(());
+//                                 }
+//                             }
+//                         }
+//                         GameMessage::Error(err) => {
+//                             eprintln!("Game error: {}", err);
+//                         }
+//                         _ => {}
+//                     }
+//                 }
+//                 Ok::<(), anyhow::Error>(())
+//             } => {}
+//         }
+
+//         Ok(())
+//     }
+// }

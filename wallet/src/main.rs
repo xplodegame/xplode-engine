@@ -8,7 +8,7 @@ use razorpay::razorpay_client::{RazorpayClient, VerifyPaymentRequest};
 use serde::Deserialize;
 use std::env;
 
-mod db;
+pub mod db;
 mod models;
 mod razorpay;
 
