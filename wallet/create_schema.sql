@@ -16,3 +16,4 @@ CREATE TABLE transactions (
        transaction_type TEXT NOT NULL,
        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
