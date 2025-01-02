@@ -1,7 +1,10 @@
 use std::env;
 
+use anyhow::Ok;
 use dotenv::dotenv;
 use sqlx::{Pool, SqlitePool};
+
+use crate::models::User;
 
 pub async fn establish_connection() -> Pool<sqlx::Sqlite> {
     dotenv().ok();
@@ -11,6 +14,20 @@ pub async fn establish_connection() -> Pool<sqlx::Sqlite> {
     SqlitePool::connect(&db_url)
         .await
         .expect("Failed to create pool")
+}
+
+pub async fn get_user(pool: &Pool<sqlx::Sqlite>, user_id: i32) -> anyhow::Result<User> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("failed to get connection from the pool");
+
+    let user: User = sqlx::query_as("Select * from users where user_id = ?")
+        .bind(user_id)
+        .fetch_one(&mut conn)
+        .await
+        .expect("Failed to fetch user");
+    Ok(user)
 }
 
 pub async fn update_user(
