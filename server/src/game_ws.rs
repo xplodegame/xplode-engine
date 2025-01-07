@@ -175,18 +175,30 @@ impl GameConnectionHandler {
                     player_id,
                     single_bet_size,
                 } => {
-                    println!("Hello Play message received");
                     let games_read = self.games.read().await;
 
                     // Check for a waiting game
-                    if let Some((game_id, GameState::WAITING { creator, board, .. })) = games_read
-                        .iter()
-                        .find(|(_, state)| matches!(state, GameState::WAITING { .. }))
-                        .map(|(game_id, state)| (game_id.clone(), state.clone()))
+                    // Check for a waiting game
+                    if let Some((game_id, GameState::WAITING { creator, board, .. })) =
+                        games_read.iter().find_map(|(game_id, state)| {
+                            if let GameState::WAITING {
+                                single_bet_size: size,
+                                ..
+                            } = state
+                            {
+                                if *size == single_bet_size {
+                                    Some((game_id.clone(), state.clone()))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
                     {
                         drop(games_read);
                         // Now we can safely create a new player and prepare the new game state
-                        println!("User will join the game");
+                        println!("Game has begun");
                         let player = Player::new(player_id);
                         let players = vec![creator.clone(), player.clone()];
 
