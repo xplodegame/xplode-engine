@@ -5,12 +5,13 @@ use futures_util::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, RwLock},
 };
-use tokio_websockets::{ClientBuilder, MaybeTlsStream, Message, ServerBuilder, WebSocketStream};
+use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
+use wallet::db::{self, establish_connection};
 
 use uuid::Uuid;
 
@@ -38,6 +39,10 @@ pub enum GameState {
         players: Vec<Player>,
         single_bet_size: u32,
     },
+    // During the start, user doesn't make a move for some predefined time
+    ABORTED {
+        game_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,9 +56,12 @@ pub enum GameMessage {
         x: usize,
         y: usize,
     },
+    Stop {
+        game_id: String,
+        abort: bool,
+    },
     GameUpdate(GameState),
     Error(String),
-    Dummy,
 }
 
 pub struct GameServer {
@@ -184,7 +192,7 @@ impl GameConnectionHandler {
 
                         let new_game_state = GameState::RUNNING {
                             game_id: game_id.clone(),
-                            players,
+                            players: players.clone(),
                             board: board.clone(),
                             turn_idx: 0,
                             single_bet_size,
@@ -207,6 +215,18 @@ impl GameConnectionHandler {
                             let response = GameMessage::GameUpdate(new_game_state.clone());
                             channel.send(response.clone()).await?;
                         }
+
+                        let pool = establish_connection().await;
+                        let player0_id: i32 = players[0].id.parse()?;
+                        let player0 = db::get_user(&pool, player0_id).await?;
+
+                        let player1_id: i32 = players[1].id.parse()?;
+                        let player1 = db::get_user(&pool, player1_id).await?;
+
+                        let player0_balance = player0.wallet_amount - single_bet_size as i32;
+                        let player1_balance = player1.wallet_amount - single_bet_size as i32;
+                        db::update_user(&pool, player0_id, player0_balance).await?;
+                        db::update_user(&pool, player1_id, player1_balance).await?;
                     } else {
                         drop(games_read);
                         println!("User will create a game");
@@ -250,6 +270,88 @@ impl GameConnectionHandler {
                         }
                     }
                 }
+                GameMessage::Stop { game_id, abort } => {
+                    let mut games_write = self.games.write().await;
+                    if !abort {
+                        // Meaning the other person has won
+                        if let Some(game_state) = games_write.get_mut(&game_id) {
+                            if let GameState::RUNNING {
+                                players,
+                                board,
+                                turn_idx,
+                                single_bet_size,
+                                ..
+                            } = game_state
+                            {
+                                *game_state = GameState::FINISHED {
+                                    game_id: game_id.clone(),
+                                    winner_idx: (*turn_idx + 1) % 2,
+                                    board: board.clone(),
+                                    players: players.clone(),
+                                    single_bet_size: single_bet_size.clone(),
+                                };
+                                // Get the channel to broadcast game state
+                                let game_channels_read = self.game_channels.read().await;
+                                if let Some(channel) = game_channels_read.get(&game_id) {
+                                    let response = GameMessage::GameUpdate(game_state.clone());
+                                    channel.send(response).await?;
+                                }
+                            }
+                        }
+                    } else {
+                        if let Some(game_state) = games_write.get_mut(&game_id) {
+                            if let GameState::RUNNING {
+                                players,
+                                single_bet_size,
+                                ..
+                            } = game_state
+                            {
+                                let pool = establish_connection().await;
+                                let player0_id: i32 = players[0].id.parse()?;
+                                let player0 = db::get_user(&pool, player0_id).await?;
+
+                                let player1_id: i32 = players[1].id.parse()?;
+                                let player1 = db::get_user(&pool, player1_id).await?;
+
+                                let player0_balance =
+                                    player0.wallet_amount + *single_bet_size as i32;
+                                let player1_balance =
+                                    player1.wallet_amount + *single_bet_size as i32;
+                                db::update_user(&pool, player0_id, player0_balance).await?;
+                                db::update_user(&pool, player1_id, player1_balance).await?;
+                            }
+
+                            *game_state = GameState::ABORTED {
+                                game_id: game_id.clone(),
+                            };
+
+                            let player_streams =
+                                self.player_streams.read().await.get(&game_id).cloned();
+
+                            if let Some(player_streams) = player_streams {
+                                let response = GameMessage::GameUpdate(game_state.clone());
+                                println!("Response: {:?}", response);
+
+                                player_streams.iter().for_each(|stream| {
+                                    let response = response.clone();
+                                    let stream = stream.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = stream
+                                            .lock()
+                                            .await
+                                            .send(Message::binary(
+                                                serde_json::to_vec(&response).unwrap(),
+                                            ))
+                                            .await
+                                        {
+                                            eprintln!("Error sending message: {}", e);
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
                 GameMessage::MakeMove { game_id, x, y } => {
                     let mut games_write = self.games.write().await;
 
@@ -262,8 +364,7 @@ impl GameConnectionHandler {
                                 single_bet_size,
                                 ..
                             } => {
-                                // Check if it's the correct player's turn
-                                // if players[*turn_idx].id == process::id().to_string() {
+                                // TODO add backend logic to check turn
                                 if board.mine(x, y) {
                                     // If mine is hit, determine winner
                                     let winner = (*turn_idx + 1) % 2;
@@ -309,6 +410,8 @@ impl GameConnectionHandler {
                         turn_idx,
                         single_bet_size,
                     } => {
+                        println!("In running");
+                        println!("{single_bet_size}. {game_id}");
                         let player_streams =
                             self.player_streams.read().await.get(&game_id).cloned();
 
@@ -320,6 +423,7 @@ impl GameConnectionHandler {
                                 turn_idx,
                                 single_bet_size,
                             });
+                            println!("Response: {:?}", response);
 
                             player_streams.iter().for_each(|stream| {
                                 let response = response.clone();
@@ -338,6 +442,7 @@ impl GameConnectionHandler {
                                 });
                             });
                         }
+                        println!("Running msg sent");
                     }
                     GameState::FINISHED {
                         game_id,
@@ -346,6 +451,7 @@ impl GameConnectionHandler {
                         players,
                         single_bet_size,
                     } => {
+                        println!("Game finished");
                         let player_streams =
                             self.player_streams.read().await.get(&game_id).cloned();
 
@@ -354,7 +460,7 @@ impl GameConnectionHandler {
                                 game_id,
                                 winner_idx,
                                 board,
-                                players,
+                                players: players.clone(),
                                 single_bet_size,
                             });
 
@@ -375,6 +481,14 @@ impl GameConnectionHandler {
                                 });
                             });
                         }
+
+                        // TODO can try to make just two db calls instead of first deducting single bet size from both users and then addding 2* betsize in one
+                        let pool = establish_connection().await;
+                        let winner_user_id: i32 = players[winner_idx].id.parse()?;
+                        let winner = db::get_user(&pool, winner_user_id).await?;
+
+                        let winner_balance = winner.wallet_amount + 2 * (single_bet_size as i32);
+                        db::update_user(&pool, winner_user_id, winner_balance).await?;
                     }
                     _ => {}
                 },

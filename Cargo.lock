@@ -2004,6 +2004,7 @@ dependencies = [
  "tokio",
  "tokio-websockets",
  "uuid",
+ "wallet",
 ]
 
 [[package]]
