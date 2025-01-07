@@ -9,8 +9,8 @@ use serde::Deserialize;
 use std::env;
 
 pub mod db;
-mod models;
-mod razorpay;
+pub mod models;
+pub mod razorpay;
 
 #[derive(Deserialize)]
 struct UserDetailsRequest {
