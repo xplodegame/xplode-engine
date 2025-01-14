@@ -107,6 +107,7 @@ impl GameServer {
 
     async fn handle_connection(registry: GameRegistry, stream: TcpStream) -> anyhow::Result<()> {
         let ws_stream = ServerBuilder::new().accept(stream).await?;
+        let pool = establish_connection().await;
 
         let (ws_write, mut ws_read) = ws_stream.split();
 
@@ -207,7 +208,6 @@ impl GameServer {
                             channel.send(response.clone()).await?;
                         }
 
-                        let pool = establish_connection().await;
                         let player0_id: i32 = players[0].id.parse()?;
                         let player0 = db::get_user(&pool, player0_id).await?;
 
@@ -297,7 +297,6 @@ impl GameServer {
                                 ..
                             } = game_state
                             {
-                                let pool = establish_connection().await;
                                 let player0_id: i32 = players[0].id.parse()?;
                                 let player0 = db::get_user(&pool, player0_id).await?;
 
@@ -474,7 +473,6 @@ impl GameServer {
                         }
 
                         // TODO can try to make just two db calls instead of first deducting single bet size from both users and then addding 2* betsize in one
-                        let pool = establish_connection().await;
                         let winner_user_id: i32 = players[winner_idx].id.parse()?;
                         let winner = db::get_user(&pool, winner_user_id).await?;
 
