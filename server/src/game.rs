@@ -64,7 +64,8 @@ pub enum GameMessage {
     Error(String),
 }
 
-pub struct GameServer {
+#[derive(Clone)]
+pub struct GamesShared {
     games: Arc<RwLock<HashMap<String, GameState>>>,
     game_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GameMessage>>>>,
     player_streams: Arc<
@@ -72,12 +73,18 @@ pub struct GameServer {
     >,
 }
 
+pub struct GameServer {
+    games_shared: GamesShared,
+}
+
 impl GameServer {
     pub fn new() -> Self {
         Self {
-            games: Arc::new(RwLock::new(HashMap::new())),
-            game_channels: Arc::new(RwLock::new(HashMap::new())),
-            player_streams: Arc::new(RwLock::new(HashMap::new())),
+            games_shared: GamesShared {
+                games: Arc::new(RwLock::new(HashMap::new())),
+                game_channels: Arc::new(RwLock::new(HashMap::new())),
+                player_streams: Arc::new(RwLock::new(HashMap::new())),
+            },
         }
     }
 
@@ -86,11 +93,7 @@ impl GameServer {
         println!("Server listening on {}", addr);
 
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
-            let handler = GameConnectionHandler::new(
-                self.games.clone(),
-                self.game_channels.clone(),
-                self.player_streams.clone(),
-            );
+            let handler = GameConnectionHandler::new(self.games_shared.clone());
 
             tokio::spawn(async move {
                 if let Err(e) = handler.handle_connection(stream).await {
@@ -104,30 +107,13 @@ impl GameServer {
 }
 
 pub struct GameConnectionHandler {
-    games: Arc<RwLock<HashMap<String, GameState>>>,
-    game_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GameMessage>>>>,
-    player_streams: Arc<
-        RwLock<HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>>,
-    >,
+    games_shared: GamesShared,
 }
 
 impl GameConnectionHandler {
-    pub fn new(
-        games: Arc<RwLock<HashMap<String, GameState>>>,
-        game_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GameMessage>>>>,
-        player_streams: Arc<
-            RwLock<
-                HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>,
-            >,
-        >,
-    ) -> Self {
-        Self {
-            games,
-            game_channels,
-            player_streams,
-        }
+    pub fn new(games_shared: GamesShared) -> Self {
+        Self { games_shared }
     }
-
     async fn handle_connection(&self, stream: TcpStream) -> anyhow::Result<()> {
         let ws_stream = ServerBuilder::new().accept(stream).await?;
 
@@ -172,7 +158,7 @@ impl GameConnectionHandler {
                     player_id,
                     single_bet_size,
                 } => {
-                    let games_read = self.games.read().await;
+                    let games_read = self.games_shared.games.read().await;
 
                     let matched_game = games_read.iter().find_map(|(game_id, state)| {
                         if let GameState::WAITING {
@@ -213,17 +199,18 @@ impl GameConnectionHandler {
                         };
 
                         {
-                            let mut games_write = self.games.write().await;
+                            let mut games_write = self.games_shared.games.write().await;
                             games_write.insert(game_id.clone(), new_game_state.clone());
                         }
-                        let mut player_streams_write = self.player_streams.write().await;
+                        let mut player_streams_write =
+                            self.games_shared.player_streams.write().await;
                         player_streams_write
                             .entry(game_id.clone())
                             .or_insert_with(Vec::new)
                             .push(ws_write.clone());
 
                         // Get the channel for this game
-                        let game_channels_read = self.game_channels.read().await;
+                        let game_channels_read = self.games_shared.game_channels.read().await;
                         if let Some(channel) = game_channels_read.get(&game_id) {
                             // Broadcast game state to all players
                             let response = GameMessage::GameUpdate(new_game_state.clone());
@@ -259,13 +246,14 @@ impl GameConnectionHandler {
 
                         // Store game state and channel
                         {
-                            let mut games_write = self.games.write().await;
+                            let mut games_write = self.games_shared.games.write().await;
                             games_write.insert(game_id.clone(), game_state.clone());
                         }
-                        let mut game_channels_write = self.game_channels.write().await;
+                        let mut game_channels_write = self.games_shared.game_channels.write().await;
                         game_channels_write.insert(game_id.clone(), tx.clone());
 
-                        let mut player_streams_write = self.player_streams.write().await;
+                        let mut player_streams_write =
+                            self.games_shared.player_streams.write().await;
                         player_streams_write
                             .entry(game_id.clone())
                             .or_insert_with(Vec::new)
@@ -285,7 +273,7 @@ impl GameConnectionHandler {
                     }
                 }
                 GameMessage::Stop { game_id, abort } => {
-                    let mut games_write = self.games.write().await;
+                    let mut games_write = self.games_shared.games.write().await;
                     if !abort {
                         // Meaning the other person has won
                         if let Some(game_state) = games_write.get_mut(&game_id) {
@@ -305,7 +293,8 @@ impl GameConnectionHandler {
                                     single_bet_size: single_bet_size.clone(),
                                 };
                                 // Get the channel to broadcast game state
-                                let game_channels_read = self.game_channels.read().await;
+                                let game_channels_read =
+                                    self.games_shared.game_channels.read().await;
                                 if let Some(channel) = game_channels_read.get(&game_id) {
                                     let response = GameMessage::GameUpdate(game_state.clone());
                                     channel.send(response).await?;
@@ -339,8 +328,13 @@ impl GameConnectionHandler {
                                 game_id: game_id.clone(),
                             };
 
-                            let player_streams =
-                                self.player_streams.read().await.get(&game_id).cloned();
+                            let player_streams = self
+                                .games_shared
+                                .player_streams
+                                .read()
+                                .await
+                                .get(&game_id)
+                                .cloned();
 
                             if let Some(player_streams) = player_streams {
                                 let response = GameMessage::GameUpdate(game_state.clone());
@@ -367,7 +361,7 @@ impl GameConnectionHandler {
                     }
                 }
                 GameMessage::MakeMove { game_id, x, y } => {
-                    let mut games_write = self.games.write().await;
+                    let mut games_write = self.games_shared.games.write().await;
 
                     if let Some(game_state) = games_write.get_mut(&game_id) {
                         match game_state {
@@ -395,7 +389,8 @@ impl GameConnectionHandler {
                                 }
 
                                 // Get the channel to broadcast game state
-                                let game_channels_read = self.game_channels.read().await;
+                                let game_channels_read =
+                                    self.games_shared.game_channels.read().await;
                                 if let Some(channel) = game_channels_read.get(&game_id) {
                                     let response = GameMessage::GameUpdate(game_state.clone());
                                     channel.send(response).await?;
@@ -426,8 +421,13 @@ impl GameConnectionHandler {
                     } => {
                         println!("In running");
                         println!("{single_bet_size}. {game_id}");
-                        let player_streams =
-                            self.player_streams.read().await.get(&game_id).cloned();
+                        let player_streams = self
+                            .games_shared
+                            .player_streams
+                            .read()
+                            .await
+                            .get(&game_id)
+                            .cloned();
 
                         if let Some(player_streams) = player_streams {
                             let response = GameMessage::GameUpdate(GameState::RUNNING {
@@ -466,8 +466,13 @@ impl GameConnectionHandler {
                         single_bet_size,
                     } => {
                         println!("Game finished");
-                        let player_streams =
-                            self.player_streams.read().await.get(&game_id).cloned();
+                        let player_streams = self
+                            .games_shared
+                            .player_streams
+                            .read()
+                            .await
+                            .get(&game_id)
+                            .cloned();
 
                         if let Some(player_streams) = player_streams {
                             let response = GameMessage::GameUpdate(GameState::FINISHED {
