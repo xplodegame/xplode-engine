@@ -2,11 +2,9 @@ use clap::{Parser, Subcommand};
 // use game::GameManager;
 use game_ws::GameServer;
 
-mod board;
-mod game;
-mod game_ws;
-mod player;
-mod seed_gen;
+mod macros;
+
+agg_mod!(board game_ws player seed_gen);
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
