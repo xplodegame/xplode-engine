@@ -23,9 +23,10 @@ pub struct Wallet {
 
 #[derive(Deserialize, Serialize)]
 pub struct Transaction {
-    pub id: u32,                    // Assuming id is INTEGER
-    pub user_id: String,            // Foreign key to User
-    pub amount: f64,                // Amount as a decimal
-    pub transaction_type: String,   // TEXT
+    pub id: u32,         // Assuming id is INTEGER
+    pub user_id: String, // Foreign key to User
+    pub amount: f64,     // Amount as a decimal
+    pub tx_type: String, // TEXT
+    pub tx_hash: String,
     pub created_at: Option<String>, // TIMESTAMP, optional
 }
