@@ -1,5 +1,6 @@
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use common::{db, models, utils};
 use db::establish_connection;
 use dotenv::dotenv;
 use models::{User, Wallet};
@@ -7,9 +8,6 @@ use models::{User, Wallet};
 use serde::Deserialize;
 use serde_json::json;
 use utils::{Currency, TxType};
-
-mod macros;
-agg_mod!(db models utils);
 
 #[derive(Deserialize)]
 struct UserDetailsRequest {
