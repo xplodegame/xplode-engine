@@ -1,3 +1,7 @@
+use common::{
+    db::{self, establish_connection},
+    utils::Currency,
+};
 use futures_util::{
     lock::Mutex,
     stream::{SplitSink, StreamExt},
@@ -11,7 +15,6 @@ use tokio::{
     sync::{mpsc, RwLock},
 };
 use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
-use wallet::db::{self, establish_connection};
 
 use uuid::Uuid;
 
@@ -23,21 +26,21 @@ pub enum GameState {
         game_id: String,
         creator: Player,
         board: Board,
-        single_bet_size: u32,
+        single_bet_size: f64,
     },
     RUNNING {
         game_id: String,
         players: Vec<Player>,
         board: Board,
         turn_idx: usize,
-        single_bet_size: u32,
+        single_bet_size: f64,
     },
     FINISHED {
         game_id: String,
         winner_idx: usize,
         board: Board,
         players: Vec<Player>,
-        single_bet_size: u32,
+        single_bet_size: f64,
     },
     // During the start, user doesn't make a move for some predefined time
     ABORTED {
@@ -49,7 +52,7 @@ pub enum GameState {
 pub enum GameMessage {
     Play {
         player_id: String,
-        single_bet_size: u32,
+        single_bet_size: f64,
     },
     MakeMove {
         game_id: String,
@@ -208,16 +211,20 @@ impl GameServer {
                             channel.send(response.clone()).await?;
                         }
 
-                        let player0_id: i32 = players[0].id.parse()?;
-                        let player0 = db::get_user(&pool, player0_id).await?;
+                        let player0_id: u32 = players[0].id.parse()?;
+                        let player0_wallet =
+                            db::get_user_wallet(&pool, player0_id, Currency::SOL).await?;
 
-                        let player1_id: i32 = players[1].id.parse()?;
-                        let player1 = db::get_user(&pool, player1_id).await?;
+                        let player1_id: u32 = players[1].id.parse()?;
+                        let player1_wallet =
+                            db::get_user_wallet(&pool, player1_id, Currency::SOL).await?;
 
-                        let player0_balance = player0.wallet_amount - single_bet_size as i32;
-                        let player1_balance = player1.wallet_amount - single_bet_size as i32;
-                        db::update_user(&pool, player0_id, player0_balance).await?;
-                        db::update_user(&pool, player1_id, player1_balance).await?;
+                        let player0_balance = player0_wallet.balance - single_bet_size;
+                        let player1_balance = player1_wallet.balance - single_bet_size;
+                        db::update_user_wallet(&pool, player0_id, Currency::SOL, player0_balance)
+                            .await?;
+                        db::update_user_wallet(&pool, player1_id, Currency::SOL, player1_balance)
+                            .await?;
                     } else {
                         drop(games_read);
                         println!("User will create a game");
@@ -297,18 +304,30 @@ impl GameServer {
                                 ..
                             } = game_state
                             {
-                                let player0_id: i32 = players[0].id.parse()?;
-                                let player0 = db::get_user(&pool, player0_id).await?;
+                                let player0_id: u32 = players[0].id.parse()?;
+                                let player0 =
+                                    db::get_user_wallet(&pool, player0_id, Currency::SOL).await?;
 
-                                let player1_id: i32 = players[1].id.parse()?;
-                                let player1 = db::get_user(&pool, player1_id).await?;
+                                let player1_id: u32 = players[1].id.parse()?;
+                                let player1 =
+                                    db::get_user_wallet(&pool, player1_id, Currency::SOL).await?;
 
-                                let player0_balance =
-                                    player0.wallet_amount + *single_bet_size as i32;
-                                let player1_balance =
-                                    player1.wallet_amount + *single_bet_size as i32;
-                                db::update_user(&pool, player0_id, player0_balance).await?;
-                                db::update_user(&pool, player1_id, player1_balance).await?;
+                                let player0_balance = player0.balance + *single_bet_size;
+                                let player1_balance = player1.balance + *single_bet_size;
+                                db::update_user_wallet(
+                                    &pool,
+                                    player0_id,
+                                    Currency::SOL,
+                                    player0_balance,
+                                )
+                                .await?;
+                                db::update_user_wallet(
+                                    &pool,
+                                    player1_id,
+                                    Currency::SOL,
+                                    player1_balance,
+                                )
+                                .await?;
                             }
 
                             *game_state = GameState::ABORTED {
@@ -473,11 +492,19 @@ impl GameServer {
                         }
 
                         // TODO can try to make just two db calls instead of first deducting single bet size from both users and then addding 2* betsize in one
-                        let winner_user_id: i32 = players[winner_idx].id.parse()?;
-                        let winner = db::get_user(&pool, winner_user_id).await?;
+                        let winner_user_id: u32 = players[winner_idx].id.parse()?;
+                        let winner_wallet =
+                            db::get_user_wallet(&pool, winner_user_id, Currency::SOL).await?;
 
-                        let winner_balance = winner.wallet_amount + 2 * (single_bet_size as i32);
-                        db::update_user(&pool, winner_user_id, winner_balance).await?;
+                        let winner_balance =
+                            winner_wallet.balance + 2.0 * (single_bet_size as i32) as f64;
+                        db::update_user_wallet(
+                            &pool,
+                            winner_user_id,
+                            Currency::SOL,
+                            winner_balance,
+                        )
+                        .await?;
                     }
                     _ => {}
                 },
