@@ -21,7 +21,7 @@ CREATE TABLE transactions (
        user_id TEXT REFERENCES users(id),
        amount DECIMAL(10,2) NOT NULL,
        currency TEXT NOT NULL,
-       tx_type TEXT NOT NULL
+       tx_type TEXT NOT NULL,
        tx_hash TEXT NOT NULL,
        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
