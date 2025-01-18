@@ -91,7 +91,7 @@ async fn deposit(
         .await
         .expect("Failed to get a connection from the pool");
 
-    let wallet: Option<Wallet> = sqlx::query_as("SELECT * FROM wallets where user_id = ?")
+    let wallet: Option<Wallet> = sqlx::query_as("SELECT * FROM wallet where user_id = ?")
         .bind(&req.user_id)
         .fetch_optional(&mut conn)
         .await
