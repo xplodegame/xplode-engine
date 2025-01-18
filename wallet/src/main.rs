@@ -55,7 +55,29 @@ async fn fetch_or_create_user(
     match existing_user {
         Some(user) => {
             // User exists, return their details
-            HttpResponse::Ok().json(user)
+            let wallet: Option<Wallet> =
+                sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
+                    .bind(user.id)
+                    .bind("SOL".to_string())
+                    .fetch_optional(&mut conn)
+                    .await
+                    .expect("Error fetching wallet");
+
+            if wallet.is_some() {
+                HttpResponse::Created().json(json!({
+                    "id": user.id,
+                    "currency": "SOL",
+                    "balance": wallet.unwrap().balance
+
+                })) // Return the created user details
+            } else {
+                HttpResponse::Created().json(json!({
+                    "id": user.id,
+                    "currency": "SOL",
+                    "balance": 0
+
+                }))
+            }
         }
         None => {
             // User does not exist, create a new user
