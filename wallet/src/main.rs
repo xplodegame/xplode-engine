@@ -59,15 +59,13 @@ async fn fetch_or_create_user(
         }
         None => {
             // User does not exist, create a new user
-            sqlx::query(
-                "INSERT INTO users (clerk_id, email, name, wallet_amount) VALUES (?, ?, ?, ?)",
-            )
-            .bind(&req.clerk_id)
-            .bind(&req.email)
-            .bind(&req.name)
-            .execute(&mut conn)
-            .await
-            .expect("Error creating new user");
+            sqlx::query("INSERT INTO users (clerk_id, email, name) VALUES (?, ?, ?)")
+                .bind(&req.clerk_id)
+                .bind(&req.email)
+                .bind(&req.name)
+                .execute(&mut conn)
+                .await
+                .expect("Error creating new user");
 
             // Fetch the newly created user to return their details
             let created_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
