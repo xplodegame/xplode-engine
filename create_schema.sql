@@ -9,17 +9,17 @@ CREATE TABLE users (
 
 CREATE TABLE wallet (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER REFERENCES users(id),
+    user_id INTEGER NOT NULL,
     currency TEXT NOT NULL,
-    balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+    balance REAL NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE transactions (
        id INTEGER PRIMARY KEY AUTOINCREMENT,
-       user_id TEXT REFERENCES users(id),
-       amount DECIMAL(10,2) NOT NULL,
+       user_id INTEGER NOT NULL,
+       amount REAL NOT NULL,
        currency TEXT NOT NULL,
        tx_type TEXT NOT NULL,
        tx_hash TEXT NOT NULL,

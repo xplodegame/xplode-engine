@@ -91,11 +91,15 @@ async fn deposit(
         .await
         .expect("Failed to get a connection from the pool");
 
-    let wallet: Option<Wallet> = sqlx::query_as("SELECT * FROM wallet where user_id = ?")
-        .bind(&req.user_id)
-        .fetch_optional(&mut conn)
-        .await
-        .expect("Error fetching wallet");
+    let wallet: Option<Wallet> =
+        sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
+            .bind(req.user_id)
+            .bind(req.currency.to_string())
+            .fetch_optional(&mut conn)
+            .await
+            .expect("Error fetching wallet");
+
+    println!("Wallet: {:?}", wallet);
 
     let mut new_balance = req.amount;
     if let Some(wallet) = wallet {
@@ -117,7 +121,7 @@ async fn deposit(
             .expect("Error creating initial wallet");
     }
 
-    // Record the transaction
+    // // Record the transaction
     sqlx::query(
         "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES (?, ?, ?, ?, ?)",
     )
