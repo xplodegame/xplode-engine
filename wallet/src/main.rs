@@ -116,14 +116,6 @@ async fn deposit(
             .await
             .expect("Error creating initial wallet");
     }
-    sqlx::query("INSERT INTO transactions (user_id, amount, tx_type, tx_hash) VALUES (?, ?, ?)")
-        .bind(req.user_id)
-        .bind(req.amount)
-        .bind(req.tx_type.to_string())
-        .bind(req.tx_hash.clone())
-        .execute(&mut conn)
-        .await
-        .expect("Error recording transaction");
 
     // Record the transaction
     sqlx::query(
