@@ -4,7 +4,7 @@ use anyhow::Ok;
 use dotenv::dotenv;
 use sqlx::{Pool, SqlitePool};
 
-use crate::models::User;
+use crate::{models::Wallet, utils::Currency};
 
 pub async fn establish_connection() -> Pool<sqlx::Sqlite> {
     dotenv().ok();
@@ -16,39 +16,44 @@ pub async fn establish_connection() -> Pool<sqlx::Sqlite> {
         .await
         .expect("Failed to create pool")
 }
-
-pub async fn get_user(pool: &Pool<sqlx::Sqlite>, user_id: i32) -> anyhow::Result<User> {
+pub async fn get_user_wallet(
+    pool: &Pool<sqlx::Sqlite>,
+    user_id: u32,
+    currency: Currency,
+) -> anyhow::Result<Wallet> {
     let mut conn = pool
         .acquire()
         .await
         .expect("failed to get connection from the pool");
 
-    let user: User = sqlx::query_as("Select * from users where id = ?")
+    let wallet: Wallet = sqlx::query_as("Select * from wallet where user_id = ? and currency = ?")
         .bind(user_id)
+        .bind(currency.to_string())
         .fetch_one(&mut conn)
         .await
-        .expect("Failed to fetch user");
-    Ok(user)
+        .expect("Failed to fetch wallet");
+
+    Ok(wallet)
 }
 
-pub async fn update_user(
+pub async fn update_user_wallet(
     pool: &Pool<sqlx::Sqlite>,
-    user_id: i32,
-    new_balance: i32,
+    user_id: u32,
+    currency: Currency,
+    new_balance: f64,
 ) -> anyhow::Result<()> {
-    println!("Updating user");
+    println!("Updating user wallet: {}", user_id);
     let mut conn = pool
         .acquire()
         .await
         .expect("failed to get connection from the pool");
 
-    // Update the user's wallet balance
-    sqlx::query("UPDATE users SET wallet_amount = ? WHERE id = ?")
+    sqlx::query("UPDATE wallet SET balance = ? WHERE user_id = ? and currency = ?")
         .bind(new_balance)
         .bind(user_id)
+        .bind(currency.to_string())
         .execute(&mut conn)
         .await
         .expect("Error updating user wallet");
-
     Ok(())
 }
