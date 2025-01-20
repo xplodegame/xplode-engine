@@ -42,6 +42,7 @@ pub async fn update_user_wallet(
     currency: Currency,
     new_balance: f64,
 ) -> anyhow::Result<()> {
+    println!("Updating user wallet: {}", user_id);
     let mut conn = pool
         .acquire()
         .await
