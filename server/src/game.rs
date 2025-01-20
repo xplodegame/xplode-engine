@@ -170,6 +170,7 @@ impl GameServer {
                             None
                         }
                     });
+                    drop(games_read);
                     if let Some((
                         game_id,
                         GameState::WAITING {
@@ -226,7 +227,6 @@ impl GameServer {
                         db::update_user_wallet(&pool, player1_id, Currency::SOL, player1_balance)
                             .await?;
                     } else {
-                        drop(games_read);
                         println!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
                         let board = Board::new(5);
