@@ -7,6 +7,7 @@ pub struct User {
     pub clerk_id: String,   // TEXT, optional
     pub email: String,      // TEXT
     pub name: String,       // TEXT
+    pub user_pda: String,   //TEXT
     pub created_at: String, // TIMESTAMP, optional
     pub updated_at: String, // TIMESTAMP, optional
 }

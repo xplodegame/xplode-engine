@@ -1,12 +1,18 @@
+use std::{str::FromStr, sync::mpsc::Sender};
+
 use actix_cors::Cors;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{db, models, utils};
 use db::establish_connection;
+use deposits::DepositService;
 use dotenv::dotenv;
 use models::{User, Wallet};
 
 use serde::Deserialize;
 use serde_json::json;
+use solana_sdk::pubkey::Pubkey;
+use sqlx::{Pool, Sqlite};
+use tokio::sync::mpsc;
 use utils::{Currency, TxType};
 
 #[derive(Deserialize)]
@@ -37,8 +43,13 @@ struct WithdrawRequest {
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
-    pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
+    app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let AppState {
+        pool,
+        deposit_service,
+    } = &**app_state;
+
     println!("Got a request");
     let mut conn = pool
         .acquire()
@@ -67,24 +78,33 @@ async fn fetch_or_create_user(
                 HttpResponse::Created().json(json!({
                     "id": user.id,
                     "currency": "SOL",
-                    "balance": wallet.unwrap().balance
+                    "balance": wallet.unwrap().balance,
+                    "user_pda": user.user_pda
 
                 })) // Return the created user details
             } else {
                 HttpResponse::Created().json(json!({
                     "id": user.id,
                     "currency": "SOL",
-                    "balance": 0
+                    "balance": 0,
+                    "user_pda": user.user_pda
 
                 }))
             }
         }
         None => {
+            // create user program derived address and add a listener to its account changes
+            // TODO: check if user pda already exists and creat a new
+            let user_pda = deposit_service
+                .generate_deposit_address()
+                .expect("Failed to create deposit address");
+
             // User does not exist, create a new user
-            sqlx::query("INSERT INTO users (clerk_id, email, name) VALUES (?, ?, ?)")
+            sqlx::query("INSERT INTO users (clerk_id, email, name, user_pda) VALUES (?, ?, ?, ?)")
                 .bind(&req.clerk_id)
                 .bind(&req.email)
                 .bind(&req.name)
+                .bind(user_pda.to_string())
                 .execute(&mut conn)
                 .await
                 .expect("Error creating new user");
@@ -108,15 +128,16 @@ async fn fetch_or_create_user(
                 HttpResponse::Created().json(json!({
                     "user_id": created_user.id,
                     "currency": "SOL",
-                    "balance": wallet.unwrap().balance
+                    "balance": wallet.unwrap().balance,
+                    "user_pda": user_pda.to_string()
 
                 })) // Return the created user details
             } else {
                 HttpResponse::Created().json(json!({
                     "user_id": created_user.id,
                     "currency": "SOL",
-                    "balance": 0
-
+                    "balance": 0,
+                    "user_pda": user_pda.to_string()
                 }))
             }
         }
@@ -124,10 +145,11 @@ async fn fetch_or_create_user(
 }
 
 #[actix_web::post("/deposit")]
-async fn deposit(
-    req: web::Json<DepositRequest>,
-    pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
-) -> impl Responder {
+async fn deposit(req: web::Json<DepositRequest>, app_state: web::Data<AppState>) -> impl Responder {
+    let AppState {
+        pool,
+        deposit_service,
+    } = &**app_state;
     println!("Deposit request arrived");
 
     let mut conn = pool
@@ -188,8 +210,12 @@ async fn deposit(
 #[actix_web::post("/withdraw")]
 async fn withdraw(
     req: web::Json<WithdrawRequest>,
-    pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
+    app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let AppState {
+        pool,
+        deposit_service,
+    } = &**app_state;
     println!("Received withdraw request");
     let mut conn = pool
         .acquire()
@@ -247,6 +273,10 @@ async fn withdraw(
     ))
 }
 
+struct AppState {
+    pool: Pool<Sqlite>,
+    deposit_service: DepositService,
+}
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Load environment variables from .env file
@@ -254,9 +284,18 @@ async fn main() -> std::io::Result<()> {
 
     let pool = establish_connection().await;
 
+    let cwd = std::env::current_dir().unwrap();
+    let deposit_service = DepositService::new(cwd.join("treasury-keypair.json"));
+
+    let app_state = web::Data::new(AppState {
+        pool,
+        deposit_service,
+    });
+
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(pool.clone()))
+            .app_data(app_state.clone())
+            .wrap(Logger::default())
             .wrap(Cors::permissive())
             .service(deposit)
             .service(withdraw)
@@ -266,3 +305,20 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+// async fn start_account_watchers(pool: sqlx::Pool<sqlx::Sqlite>, tx: mpsc::Sender<Pubkey>) {
+//     let mut conn = pool.acquire().await.expect("DB Connection failed");
+
+//     loop
+//     let users: Vec<User> = sqlx::query_as("SELECT user_pda FROM users")
+//         .fetch_all(&mut conn)
+//         .await
+//         .expect("Failed to fetch users");
+
+//     for user in users {
+//         let account_pubkey = Pubkey::from_str(&user.user_pda).expect("Invalid pubkey");
+//         tx.send(account_pubkey)
+//             .await
+//             .expect("Failed to send account to channel");
+//     }
+// }

@@ -3,6 +3,7 @@ CREATE TABLE users (
     clerk_id TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     name TEXT,
+    user_pda TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
