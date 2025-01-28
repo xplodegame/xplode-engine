@@ -3,7 +3,7 @@ use std::{str::FromStr, time::Duration};
 use common::{db::establish_connection, models::User};
 use deposits::DepositService;
 use dotenv::dotenv;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
+use solana_sdk::pubkey::Pubkey;
 use tokio::time::sleep;
 
 #[tokio::main]
