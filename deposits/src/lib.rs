@@ -4,7 +4,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig, instruction::AccountMeta, pubkey::Pubkey,
     signature::Keypair, signer::Signer, system_program, transaction::Transaction,
 };
-use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 #[derive(Clone)]
 pub struct DepositService {
