@@ -81,19 +81,27 @@ impl DepositService {
     ) -> anyhow::Result<String> {
         let to_pubkey = Pubkey::from_str(&withdrawal_address)?;
 
-        let instruction = system_instruction::transfer(&self.treasury.pubkey(), &to_pubkey, amount);
-        let recent_blockhash = self.connection.get_latest_blockhash()?;
-        let transaction = Transaction::new_signed_with_payer(
-            &[instruction],
-            Some(&self.treasury.pubkey()),
-            &[self.treasury.as_ref()],
-            recent_blockhash,
-        );
+        let treasury_pubkey = self.treasury.pubkey();
+        let treasury_keypair = self.treasury.clone();
+        let rpc_client = self.connection.clone();
 
-        let signature = self.connection.send_and_confirm_transaction(&transaction)?;
+        let signature = tokio::task::spawn_blocking(move || {
+            let instruction = system_instruction::transfer(&treasury_pubkey, &to_pubkey, amount);
+            let recent_blockhash = rpc_client.get_latest_blockhash()?; // Blocking
+            let transaction = Transaction::new_signed_with_payer(
+                &[instruction],
+                Some(&treasury_pubkey),
+                &[treasury_keypair.as_ref()],
+                recent_blockhash,
+            );
+
+            let signature = rpc_client.send_and_confirm_transaction(&transaction)?; // Blocking
+            Ok::<_, anyhow::Error>(signature.to_string())
+        })
+        .await??;
+
         println!("Signature: {:?}", signature);
-
-        Ok(signature.to_string())
+        Ok(signature)
     }
 }
 

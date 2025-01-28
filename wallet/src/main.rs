@@ -209,6 +209,7 @@ async fn withdraw(
     req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    println!("Attempting to withdraw");
     let AppState {
         pool,
         deposit_service,
@@ -263,7 +264,7 @@ async fn withdraw(
     .bind(req.amount)
     .bind(req.currency.to_string())
     .bind(TxType::WITHDRAWAL.to_string())
-    .bind(withdraw_txhash)
+    .bind(withdraw_txhash.clone())
     .execute(&mut conn)
     .await
     .expect("Error recording transaction");
@@ -272,13 +273,14 @@ async fn withdraw(
         "Withdrawal of {} successful. New balance: {}",
         req.amount, new_balance
     );
-    HttpResponse::Ok().json(json!(
+    return HttpResponse::Ok().json(json!(
         {
             "user_id": req.user_id,
             "currency": req.currency,
-            "balance": new_balance
+            "balance": new_balance,
+            "tx_hash": withdraw_txhash.clone(),
         }
-    ))
+    ));
 }
 
 struct AppState {
