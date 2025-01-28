@@ -1,7 +1,5 @@
 use redis::Client;
-use solana_client::{
-    pubsub_client::PubsubClient, rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig,
-};
+use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig, instruction::AccountMeta, pubkey::Pubkey,
     signature::Keypair, signer::Signer, system_program, transaction::Transaction,
