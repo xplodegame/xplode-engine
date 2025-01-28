@@ -24,6 +24,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    println!("Starting the server");
     let cli = Cli::parse();
 
     match cli.command {
