@@ -2,7 +2,8 @@ use redis::Client;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig, instruction::AccountMeta, pubkey::Pubkey,
-    signature::Keypair, signer::Signer, system_program, transaction::Transaction,
+    signature::Keypair, signer::Signer, system_instruction, system_program,
+    transaction::Transaction,
 };
 use std::{path::Path, str::FromStr, sync::Arc};
 
@@ -71,6 +72,28 @@ impl DepositService {
         }
 
         Ok(())
+    }
+
+    pub async fn withdraw_to_user_from_treasury(
+        &self,
+        withdrawal_address: String,
+        amount: u64,
+    ) -> anyhow::Result<String> {
+        let to_pubkey = Pubkey::from_str(&withdrawal_address)?;
+
+        let instruction = system_instruction::transfer(&self.treasury.pubkey(), &to_pubkey, amount);
+        let recent_blockhash = self.connection.get_latest_blockhash()?;
+        let transaction = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&self.treasury.pubkey()),
+            &[self.treasury.as_ref()],
+            recent_blockhash,
+        );
+
+        let signature = self.connection.send_and_confirm_transaction(&transaction)?;
+        println!("Signature: {:?}", signature);
+
+        Ok(signature.to_string())
     }
 }
 

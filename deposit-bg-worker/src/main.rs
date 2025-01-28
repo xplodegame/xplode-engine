@@ -9,7 +9,9 @@ use tokio::time::sleep;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
+    println!("Starting the deposit background service");
     let current_dir = std::env::current_dir()?;
+
     let service = DepositService::new(current_dir.join("treasury-keypair.json"));
     let pool = establish_connection();
     let mut conn = pool.await.acquire().await.expect("DB conn failed");

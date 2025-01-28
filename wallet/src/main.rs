@@ -1,5 +1,3 @@
-use std::{str::FromStr, sync::mpsc::Sender};
-
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{db, models, utils};
@@ -10,10 +8,10 @@ use models::{User, Wallet};
 
 use serde::Deserialize;
 use serde_json::json;
-use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Sqlite};
-use tokio::sync::mpsc;
 use utils::{Currency, TxType};
+
+const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
 
 #[derive(Deserialize)]
 struct UserDetailsRequest {
@@ -36,8 +34,7 @@ struct WithdrawRequest {
     user_id: u32,
     amount: f64,
     currency: Currency,
-    tx_hash: String,
-    tx_type: TxType,
+    withdraw_address: String,
 }
 
 #[actix_web::post("/user-details")]
@@ -148,7 +145,7 @@ async fn fetch_or_create_user(
 async fn deposit(req: web::Json<DepositRequest>, app_state: web::Data<AppState>) -> impl Responder {
     let AppState {
         pool,
-        deposit_service,
+        deposit_service: _,
     } = &**app_state;
     println!("Deposit request arrived");
 
@@ -235,6 +232,17 @@ async fn withdraw(
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
+    //FIXME: transfer the req.amount to user
+    let withdraw_txhash = deposit_service
+        .withdraw_to_user_from_treasury(
+            req.withdraw_address.clone(),
+            (req.amount * SOL_TO_LAMPORTS as f64) as u64,
+        )
+        .await
+        .unwrap();
+
+    println!("Withdrawn tx hash: {:?}", withdraw_txhash);
+
     // Deduct the amount from the user's wallet
     let new_balance = current_balance.0 - req.amount;
 
@@ -254,8 +262,8 @@ async fn withdraw(
     .bind(req.user_id)
     .bind(req.amount)
     .bind(req.currency.to_string())
-    .bind(req.tx_type.to_string())
-    .bind(req.tx_hash.clone())
+    .bind(TxType::WITHDRAWAL.to_string())
+    .bind(withdraw_txhash)
     .execute(&mut conn)
     .await
     .expect("Error recording transaction");
@@ -281,6 +289,7 @@ struct AppState {
 async fn main() -> std::io::Result<()> {
     // Load environment variables from .env file
     dotenv().ok();
+    println!("Starting the wallet");
 
     let pool = establish_connection().await;
 
