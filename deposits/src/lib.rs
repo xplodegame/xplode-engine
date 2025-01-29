@@ -7,16 +7,60 @@ use solana_sdk::{
 };
 use std::{path::Path, str::FromStr, sync::Arc};
 
+async fn handle_deposit(
+    connection: Arc<RpcClient>,
+    treasury: Arc<Keypair>,
+    program_id: Pubkey,
+    redis: Arc<Client>,
+    deposit_address: Pubkey,
+    amount: u64,
+) -> anyhow::Result<()> {
+    let mut conn = redis.get_connection()?;
+    let user_id: String = redis::cmd("HGET")
+        .arg("deposit_addresses")
+        .arg(deposit_address.to_string())
+        .query(&mut conn)?;
+
+    let user_pubkey = Pubkey::from_str(&user_id)?;
+
+    let instruction = anchor_lang::solana_program::instruction::Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(deposit_address, false), // PDA is not a signer
+            AccountMeta::new(user_pubkey, false),
+            AccountMeta::new(treasury.pubkey(), true), // Treasury is signer
+            AccountMeta::new_readonly(system_program::id(), false),
+        ],
+        data: {
+            let mut data = vec![91, 60, 51, 162, 44, 140, 96, 24];
+            data.extend_from_slice(&amount.to_le_bytes());
+            data
+        },
+    };
+
+    let recent_blockhash = connection.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&treasury.pubkey()),
+        &[treasury.as_ref()], // Only treasury signs
+        recent_blockhash,
+    );
+
+    let signature = connection.send_and_confirm_transaction(&transaction)?;
+
+    println!("Confirmation sent: {:?}", signature);
+    Ok(())
+}
 #[derive(Clone)]
 pub struct DepositService {
-    redis: Client,
+    redis: Arc<Client>,
     connection: Arc<RpcClient>,
     treasury: Arc<Keypair>,
     program_id: Pubkey,
 }
 
 impl DepositService {
-    pub fn new<P: AsRef<Path>>(treasury_keypair_path: P) -> Self {
+    pub fn new<P: AsRef<Path>>(treasury_keypair_path: P, program_id: Pubkey) -> Self {
         let connection = RpcClient::new_with_commitment(
             std::env::var("SOLANA_RPC_URL").unwrap(),
             CommitmentConfig::confirmed(),
@@ -27,10 +71,11 @@ impl DepositService {
         let treasury = Keypair::from_bytes(&treasury_bytes).unwrap();
 
         Self {
-            redis: Client::open(std::env::var("REDIS_URL").unwrap()).unwrap(),
+            redis: Arc::new(Client::open(std::env::var("REDIS_URL").unwrap()).unwrap()),
             connection: Arc::new(connection),
             treasury: Arc::new(treasury),
-            program_id: Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap(),
+            //program_id: Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap(),
+            program_id,
         }
     }
 
@@ -52,20 +97,25 @@ impl DepositService {
     pub async fn check_deposits(&self, pubkeys: Vec<Pubkey>) -> anyhow::Result<()> {
         if let Ok(accounts) = self.connection.get_multiple_accounts(&pubkeys) {
             for (i, account) in accounts.iter().enumerate() {
-                // check if accouhnt lamport is > 0, initiate fund transfer to the treasury
+                // check if account lamport is > 0, initiate fund transfer to the treasury
                 if let Some(account) = account {
                     if account.lamports > 0 {
                         // handle deposit
                         println!("Account: {:?}", account);
-                        handle_deposit(
-                            &self.connection,
-                            &self.treasury,
-                            self.program_id,
-                            &self.redis,
-                            pubkeys[i],
-                            account.lamports,
-                        )
-                        .await?;
+                        let conn = self.connection.clone();
+                        let treasury = self.treasury.clone();
+                        let redis = self.redis.clone();
+                        let program_id = self.program_id.clone();
+                        let pubkey = pubkeys[i].clone();
+                        let amount = account.lamports.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) =
+                                handle_deposit(conn, treasury, program_id, redis, pubkey, amount)
+                                    .await
+                            {
+                                eprintln!("Error: {:?}", err);
+                            }
+                        });
                     }
                 }
             }
@@ -103,51 +153,6 @@ impl DepositService {
         println!("Signature: {:?}", signature);
         Ok(signature)
     }
-}
-
-async fn handle_deposit(
-    connection: &RpcClient,
-    treasury: &Keypair,
-    program_id: Pubkey,
-    redis: &Client,
-    deposit_address: Pubkey,
-    amount: u64,
-) -> anyhow::Result<()> {
-    let mut conn = redis.get_connection()?;
-    let user_id: String = redis::cmd("HGET")
-        .arg("deposit_addresses")
-        .arg(deposit_address.to_string())
-        .query(&mut conn)?;
-
-    let user_pubkey = Pubkey::from_str(&user_id)?;
-
-    let instruction = anchor_lang::solana_program::instruction::Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(deposit_address, false), // PDA is not a signer
-            AccountMeta::new(user_pubkey, false),
-            AccountMeta::new(treasury.pubkey(), true), // Treasury is signer
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
-        data: {
-            let mut data = vec![91, 60, 51, 162, 44, 140, 96, 24];
-            data.extend_from_slice(&amount.to_le_bytes());
-            data
-        },
-    };
-
-    let recent_blockhash = connection.get_latest_blockhash()?;
-    let transaction = Transaction::new_signed_with_payer(
-        &[instruction],
-        Some(&treasury.pubkey()),
-        &[treasury], // Only treasury signs
-        recent_blockhash,
-    );
-
-    let signature = connection.send_and_confirm_transaction(&transaction)?;
-
-    println!("Confirmation sent: {:?}", signature);
-    Ok(())
 }
 
 // // pub async fn read_account_updates(&self, account_pubkey: Pubkey) -> anyhow::Result<()> {
