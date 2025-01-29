@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{db, models, utils};
@@ -8,6 +10,7 @@ use models::{User, Wallet};
 
 use serde::Deserialize;
 use serde_json::json;
+use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Sqlite};
 use utils::{Currency, TxType};
 
@@ -295,8 +298,10 @@ async fn main() -> std::io::Result<()> {
 
     let pool = establish_connection().await;
 
+    let program_id = Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap();
+
     let cwd = std::env::current_dir().unwrap();
-    let deposit_service = DepositService::new(cwd.join("treasury-keypair.json"));
+    let deposit_service = DepositService::new(cwd.join("treasury-keypair.json"), program_id);
 
     let app_state = web::Data::new(AppState {
         pool,
