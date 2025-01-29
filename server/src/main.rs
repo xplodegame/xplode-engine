@@ -1,8 +1,9 @@
+use common::agg_mod;
 //use clap::{Parser, Subcommand};
 // use game::GameManager;
 use game::GameServer;
 
-mod macros;
+//mod macros;
 
 agg_mod!(board game player seed_gen);
 //
