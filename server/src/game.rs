@@ -27,6 +27,8 @@ pub enum GameState {
         creator: Player,
         board: Board,
         single_bet_size: f64,
+        players_required: u8, // this is the max though it wont be practically possible
+        players_waiting: u8,
     },
     RUNNING {
         game_id: String,
@@ -177,6 +179,8 @@ impl GameServer {
                             creator,
                             board,
                             single_bet_size,
+                            players_required,
+                            players_waiting,
                             ..
                         },
                     )) = matched_game
@@ -186,18 +190,29 @@ impl GameServer {
                         let player = Player::new(player_id);
                         let players = vec![creator.clone(), player.clone()];
 
-                        let new_game_state = GameState::RUNNING {
-                            game_id: game_id.clone(),
-                            players: players.clone(),
-                            board: board.clone(),
-                            turn_idx: 0,
-                            single_bet_size,
+                        //TODO: Gamestate shouldn't be running if players_required haven't made.
+                        let new_game_state = if players_waiting + 1 == players_required {
+                            GameState::RUNNING {
+                                game_id: game_id.clone(),
+                                players: players.clone(),
+                                board: board.clone(),
+                                turn_idx: 0,
+                                single_bet_size,
+                            }
+                        } else {
+                            GameState::WAITING {
+                                game_id: game_id.clone(),
+                                creator: creator.clone(),
+                                board: board.clone(),
+                                single_bet_size: single_bet_size.clone(),
+                                players_required: players_required,
+                                players_waiting: players_waiting + 1,
+                            }
                         };
 
-                        {
-                            let mut games_write = registry.games.write().await;
-                            games_write.insert(game_id.clone(), new_game_state.clone());
-                        }
+                        let mut games_write = registry.games.write().await;
+                        games_write.insert(game_id.clone(), new_game_state.clone());
+
                         let mut player_streams_write = registry.player_streams.write().await;
                         player_streams_write
                             .entry(game_id.clone())
