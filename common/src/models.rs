@@ -31,3 +31,13 @@ pub struct Transaction {
     pub tx_hash: String,
     pub created_at: Option<String>, // TIMESTAMP, optional
 }
+
+#[derive(Deserialize, Serialize, sqlx::FromRow)]
+pub struct Pnl {
+    pub id: u32,
+    pub user_id: u32,
+    pub num_matches: u32,
+    pub profit: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}

@@ -14,6 +14,7 @@ pub enum CellState {
 pub struct Board {
     n: usize, // it would be nXn
     grid: Vec<Vec<CellState>>,
+    //TODO: It should be either continuous or scattered
     bomb_coordinates: Vec<u64>,
 }
 
