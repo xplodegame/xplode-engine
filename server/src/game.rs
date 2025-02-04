@@ -1,7 +1,4 @@
-use common::{
-    db::{self, establish_connection},
-    utils::Currency,
-};
+use common::db::{self, establish_connection};
 use futures_util::{
     lock::Mutex,
     stream::{SplitSink, StreamExt},
@@ -124,7 +121,7 @@ impl GameServer {
         let ws_write = Arc::new(Mutex::new(ws_write));
 
         // Create a channel for this game connection
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(500);
 
         // Spawn a task to handle incoming WebSocket messages
         let handlers = tokio::spawn({
@@ -275,6 +272,7 @@ impl GameServer {
                     }
                 }
                 GameMessage::Join { game_id, player_id } => {
+                    println!("Request to join:: {:?} game", game_id);
                     let games_read = registry.games.read().await;
                     let game_state = games_read.get(&game_id);
                     if let Some(GameState::WAITING {
@@ -333,7 +331,7 @@ impl GameServer {
                             .send(Message::binary(serde_json::to_vec(&response)?))
                             .await
                         {
-                            eprintln!("Failed to send error message to the client");
+                            eprintln!("Failed to send error message to the client:: {:?}", err);
                         }
                     }
                 }
