@@ -13,7 +13,7 @@ use dotenv::dotenv;
 use models::{User, Wallet};
 
 use serde_json::json;
-use solana_sdk::{nonce::state::Data, pubkey::Pubkey};
+use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Sqlite};
 use utils::TxType;
 
