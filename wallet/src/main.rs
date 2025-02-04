@@ -88,7 +88,10 @@ async fn fetch_or_create_user(
 }
 
 #[actix_web::get("/pnl/{user_id}")]
-async fn get_pnl(user_id: web::Path<String>, app_state: web::Data<AppState>) -> impl Responder {
+async fn get_user_pnl(
+    user_id: web::Path<String>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
     let user_id: u32 = user_id.into_inner().parse().unwrap();
     let AppState {
         pool,
@@ -103,6 +106,26 @@ async fn get_pnl(user_id: web::Path<String>, app_state: web::Data<AppState>) -> 
         .expect("Error fetching wallet");
 
     HttpResponse::Ok().json(user_pnl)
+}
+// user history endpoint
+
+// total pnl
+#[actix_web::get("/leaderboard")]
+async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
+    let AppState {
+        pool,
+        deposit_service: _,
+    } = &**app_state;
+    println!("Leaderboard request arrived");
+
+    let mut conn = pool.acquire().await.unwrap();
+
+    let pnls: Vec<Pnl> = sqlx::query_as("SELECT * from pnl ORDER BY profit DESC")
+        .fetch_all(&mut conn)
+        .await
+        .expect("Failed to fetch all pnls");
+
+    HttpResponse::Ok().json(json!(pnls))
 }
 
 #[actix_web::post("/deposit")]
@@ -269,6 +292,7 @@ async fn main() -> std::io::Result<()> {
             .service(deposit)
             .service(withdraw)
             .service(fetch_or_create_user)
+            .service(get_leaderboard)
     })
     .bind("127.0.0.1:8080")?
     .run()
