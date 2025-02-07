@@ -5,7 +5,7 @@ use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responde
 use common::{
     db,
     models::{self, Pnl},
-    utils::{self, DepositRequest, UserDetailsRequest, WithdrawRequest},
+    utils::{self, Currency, DepositRequest, UserDetailsRequest, WithdrawRequest},
 };
 use db::establish_connection;
 use deposits::DepositService;
@@ -13,7 +13,7 @@ use dotenv::dotenv;
 use models::{User, Wallet};
 
 use serde_json::json;
-use solana_sdk::{nonce::state::Data, pubkey::Pubkey};
+use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Sqlite};
 use utils::TxType;
 
@@ -42,13 +42,24 @@ async fn fetch_or_create_user(
         .expect("Error fetching user");
 
     match existing_user {
-        Some(user) => HttpResponse::Created().json(json!({
-            "id": user.id,
-            "currency": "SOL",
-            "balance": 0,
-            "user_pda": user.user_pda
+        Some(user) => {
+            let wallet: Wallet =
+                sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
+                    .bind(user.id)
+                    .bind(Currency::SOL.to_string())
+                    .fetch_one(&mut conn)
+                    .await
+                    .expect("Error fetching wallet");
 
-        })),
+            HttpResponse::Created().json(json!({
+                "id": user.id,
+                "currency": "SOL",
+                "balance": wallet.balance,
+                "user_pda": user.user_pda
+
+            }))
+        }
+
         None => {
             // create user program derived address and add a listener to its account changes
             // TODO: check if user pda already exists and creat a new
