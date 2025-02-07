@@ -259,7 +259,7 @@ impl GameServer {
                             .push(ws_write.clone());
 
                         // Send back the game state to the creater
-                        //FIXME: Better solution requi
+                        //FIXME: Better solution required
                         let response = GameMessage::GameUpdate(game_state);
                         if let Err(e) = ws_write
                             .lock()
@@ -479,6 +479,49 @@ impl GameServer {
                     }
                 }
                 GameMessage::GameUpdate(msg) => match msg {
+                    GameState::WAITING {
+                        game_id,
+                        creator,
+                        board,
+                        single_bet_size,
+                        min_players,
+                        players,
+                    } => {
+                        println!("In waiting");
+                        println!("{single_bet_size}. {game_id}");
+                        let player_streams =
+                            registry.player_streams.read().await.get(&game_id).cloned();
+
+                        if let Some(player_streams) = player_streams {
+                            let response = GameMessage::GameUpdate(GameState::WAITING {
+                                game_id,
+                                creator,
+                                board,
+                                single_bet_size,
+                                min_players,
+                                players,
+                            });
+                            println!("Response: {:?}", response);
+
+                            player_streams.iter().for_each(|stream| {
+                                let response = response.clone();
+                                let stream = stream.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = stream
+                                        .lock()
+                                        .await
+                                        .send(Message::binary(
+                                            serde_json::to_vec(&response).unwrap(),
+                                        ))
+                                        .await
+                                    {
+                                        eprintln!("Error sending message: {}", e);
+                                    }
+                                });
+                            });
+                        }
+                        println!("Waiting msg sent");
+                    }
                     GameState::RUNNING {
                         game_id,
                         players,
