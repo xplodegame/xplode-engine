@@ -1,7 +1,4 @@
-use common::{
-    db::{self, establish_connection},
-    utils::Currency,
-};
+use common::db::{self, establish_connection};
 use futures_util::{
     lock::Mutex,
     stream::{SplitSink, StreamExt},
@@ -56,6 +53,10 @@ pub enum GameMessage {
         player_id: String,
         single_bet_size: f64,
         min_players: u32,
+    },
+    Join {
+        game_id: String,
+        player_id: String,
     },
     MakeMove {
         game_id: String,
@@ -120,7 +121,7 @@ impl GameServer {
         let ws_write = Arc::new(Mutex::new(ws_write));
 
         // Create a channel for this game connection
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(500);
 
         // Spawn a task to handle incoming WebSocket messages
         let handlers = tokio::spawn({
@@ -267,6 +268,70 @@ impl GameServer {
                             .await
                         {
                             eprintln!("Error sending GameUpdate message: {}", e);
+                        }
+                    }
+                }
+                GameMessage::Join { game_id, player_id } => {
+                    println!("Request to join:: {:?} game", game_id);
+                    let games_read = registry.games.read().await;
+                    let game_state = games_read.get(&game_id);
+                    if let Some(GameState::WAITING {
+                        game_id,
+                        creator,
+                        board,
+                        single_bet_size,
+                        min_players,
+                        players,
+                    }) = game_state
+                    {
+                        let new_player = Player::new(player_id);
+                        let mut players = players.clone();
+                        players.push(new_player);
+
+                        let new_game_state = if players.len() < *min_players as usize {
+                            GameState::WAITING {
+                                game_id: game_id.clone(),
+                                creator: creator.clone(),
+                                board: board.clone(),
+                                single_bet_size: *single_bet_size,
+                                min_players: *min_players,
+                                players,
+                            }
+                        } else {
+                            GameState::RUNNING {
+                                game_id: game_id.clone(),
+                                players: players,
+                                board: board.clone(),
+                                turn_idx: 0,
+                                single_bet_size: *single_bet_size,
+                            }
+                        };
+                        let mut games_write = registry.games.write().await;
+                        games_write.insert(game_id.clone(), new_game_state.clone());
+
+                        let mut player_streams_write = registry.player_streams.write().await;
+                        player_streams_write
+                            .entry(game_id.clone())
+                            .or_insert_with(Vec::new)
+                            .push(ws_write.clone());
+
+                        // Get the channel for this game
+                        let game_channels_read = registry.game_channels.read().await;
+                        if let Some(channel) = game_channels_read.get(game_id) {
+                            // Broadcast game state to all players
+                            let response = GameMessage::GameUpdate(new_game_state.clone());
+                            channel.send(response).await?;
+                        }
+                    } else {
+                        let response =
+                            GameMessage::Error("this game is not accepting players".to_string());
+                        if let Err(err) = ws_write
+                            .lock()
+                            .await
+                            .send(Message::binary(serde_json::to_vec(&response)?))
+                            .await
+                        {
+                            eprintln!("Failed to send error message to the client:: {:?}", err);
                         }
                     }
                 }
