@@ -1,15 +1,14 @@
 use common::db::{self, establish_connection};
-use futures_util::{
-    lock::Mutex,
-    stream::{SplitSink, StreamExt},
-    SinkExt,
-};
+use futures_util::{lock::Mutex, stream::StreamExt, SinkExt};
 
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, RwLock},
+    sync::{
+        broadcast::{self, Sender},
+        mpsc, RwLock,
+    },
 };
 use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
 
@@ -77,9 +76,9 @@ pub enum GameMessage {
 pub struct GameRegistry {
     games: Arc<RwLock<HashMap<String, GameState>>>,
     game_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GameMessage>>>>,
-    player_streams: Arc<
-        RwLock<HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>>,
-    >,
+    // player_streams: Arc<
+    //     RwLock<HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>>,
+    // >,
 }
 
 pub struct GameServer {
@@ -92,7 +91,7 @@ impl GameServer {
             registry: GameRegistry {
                 games: Arc::new(RwLock::new(HashMap::new())),
                 game_channels: Arc::new(RwLock::new(HashMap::new())),
-                player_streams: Arc::new(RwLock::new(HashMap::new())),
+                // player_streams: Arc::new(RwLock::new(HashMap::new())),
             },
         }
     }
@@ -101,11 +100,14 @@ impl GameServer {
         let listener = TcpListener::bind(addr).await?;
         println!("Server listening on {}", addr);
 
+        let (tx, _rx) = broadcast::channel::<Message>(100);
+
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
             let registry = self.registry.clone();
 
+            let tx = tx.clone();
             tokio::spawn(async move {
-                if let Err(e) = GameServer::handle_connection(registry, stream).await {
+                if let Err(e) = GameServer::handle_connection(registry, stream, tx).await {
                     eprintln!("Error handling connection: {}", e);
                 }
             });
@@ -114,46 +116,68 @@ impl GameServer {
         Ok(())
     }
 
-    async fn handle_connection(registry: GameRegistry, stream: TcpStream) -> anyhow::Result<()> {
+    async fn handle_connection(
+        registry: GameRegistry,
+        stream: TcpStream,
+        broadcast_tx: Sender<Message>,
+    ) -> anyhow::Result<()> {
         let ws_stream = ServerBuilder::new().accept(stream).await?;
         let pool = establish_connection().await;
+        // ✅ Each client gets its own Receiver
+        let mut broadcast_rx = broadcast_tx.subscribe();
 
-        let (ws_write, mut ws_read) = ws_stream.split();
+        let (ws_sink, mut ws_stream) = ws_stream.split();
 
-        let ws_write = Arc::new(Mutex::new(ws_write));
+        let ws_write = Arc::new(Mutex::new(ws_sink));
 
         // Create a channel for this game connection
-        let (tx, mut rx) = tokio::sync::mpsc::channel(500);
+        let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(500);
+        let server_tx_clone = server_tx.clone();
 
         // Spawn a task to handle incoming WebSocket messages
-        let handlers = tokio::spawn({
-            let tx_clone = tx.clone();
+        let readers_task = tokio::spawn(async move {
             async move {
-                while let Some(msg) = ws_read.next().await {
+                while let Some(msg) = ws_stream.next().await {
+                    let server_tx_inner = server_tx_clone.clone();
+
                     match msg {
-                        Ok(message) => match serde_json::from_slice(message.as_payload()) {
-                            Ok(game_msg) => {
-                                println!("msg: {:?}", game_msg);
-                                if let Err(e) = tx_clone.send(game_msg).await {
-                                    eprintln!("Error sending message: {}", e);
-                                    break;
+                        Ok(message) => {
+                            tokio::spawn(async move {
+                                match serde_json::from_slice(message.as_payload()) {
+                                    Ok(game_msg) => {
+                                        println!("msg: {:?}", game_msg);
+                                        if let Err(e) = server_tx_inner.send(game_msg).await {
+                                            eprintln!("Error sending message: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Deserialization error: {}", e);
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("Deserialization error: {}", e);
-                            }
-                        },
+                            });
+                        }
                         Err(e) => {
                             eprintln!("WebSocket error: {}", e);
-                            break;
                         }
                     }
                 }
             }
         });
 
+        let ws_write_2 = ws_write.clone();
+        let writers_task = tokio::spawn(async move {
+            while let Ok(msg) = broadcast_rx.recv().await {
+                let mut sink = ws_write_2.lock().await;
+                if sink.send(msg.into()).await.is_err() {
+                    // FIXME: Player id to print
+                    eprintln!("Player disconnected");
+                    break;
+                }
+            }
+        });
+
         // Process game messages
-        while let Some(message) = rx.recv().await {
+        while let Some(message) = server_rx.recv().await {
             match message {
                 GameMessage::Play {
                     player_id,
@@ -221,11 +245,11 @@ impl GameServer {
                         let mut games_write = registry.games.write().await;
                         games_write.insert(game_id.clone(), new_game_state.clone());
 
-                        let mut player_streams_write = registry.player_streams.write().await;
-                        player_streams_write
-                            .entry(game_id.clone())
-                            .or_insert_with(Vec::new)
-                            .push(ws_write.clone());
+                        // let mut player_streams_write = registry.player_streams.write().await;
+                        // player_streams_write
+                        //     .entry(game_id.clone())
+                        //     .or_insert_with(Vec::new)
+                        //     .push(ws_write.clone());
 
                         // Get the channel for this game
                         let game_channels_read = registry.game_channels.read().await;
@@ -254,25 +278,29 @@ impl GameServer {
                         games_write.insert(game_id.clone(), game_state.clone());
 
                         let mut game_channels_write = registry.game_channels.write().await;
-                        game_channels_write.insert(game_id.clone(), tx.clone());
-
-                        let mut player_streams_write = registry.player_streams.write().await;
-                        player_streams_write
-                            .entry(game_id.clone())
-                            .or_insert_with(Vec::new)
-                            .push(ws_write.clone());
+                        game_channels_write.insert(game_id.clone(), server_tx.clone());
+                        drop(game_channels_write);
+                        // let mut player_streams_write = registry.player_streams.write().await;
+                        // player_streams_write
+                        //     .entry(game_id.clone())
+                        //     .or_insert_with(Vec::new)
+                        //     .push(ws_write.clone());
 
                         // Send back the game state to the creater
                         //FIXME: Better solution required
                         let response = GameMessage::GameUpdate(game_state);
-                        if let Err(e) = ws_write
-                            .lock()
-                            .await
-                            .send(Message::binary(serde_json::to_vec(&response)?))
-                            .await
-                        {
-                            eprintln!("Error sending GameUpdate message: {}", e);
+                        let game_channel_read = registry.game_channels.read().await;
+                        if let Some(channel) = game_channel_read.get(&game_id) {
+                            channel.send(response).await?;
                         }
+                        // if let Err(e) = ws_write
+                        //     .lock()
+                        //     .await
+                        //     .send(Message::binary(serde_json::to_vec(&response)?))
+                        //     .await
+                        // {
+                        //     eprintln!("Error sending GameUpdate message: {}", e);
+                        // }
                     }
                 }
                 GameMessage::Join { game_id, player_id } => {
@@ -313,11 +341,11 @@ impl GameServer {
                         let mut games_write = registry.games.write().await;
                         games_write.insert(game_id.clone(), new_game_state.clone());
 
-                        let mut player_streams_write = registry.player_streams.write().await;
-                        player_streams_write
-                            .entry(game_id.clone())
-                            .or_insert_with(Vec::new)
-                            .push(ws_write.clone());
+                        // let mut player_streams_write = registry.player_streams.write().await;
+                        // player_streams_write
+                        //     .entry(game_id.clone())
+                        //     .or_insert_with(Vec::new)
+                        //     .push(ws_write.clone());
 
                         // Get the channel for this game
                         let game_channels_read = registry.game_channels.read().await;
@@ -330,6 +358,7 @@ impl GameServer {
                         let response =
                             GameMessage::Error("this game is not accepting players".to_string());
                         if let Err(err) = ws_write
+                            .clone()
                             .lock()
                             .await
                             .send(Message::binary(serde_json::to_vec(&response)?))
@@ -405,29 +434,34 @@ impl GameServer {
                                 game_id: game_id.clone(),
                             };
 
-                            let player_streams =
-                                registry.player_streams.read().await.get(&game_id).cloned();
+                            // let player_streams =
+                            //     registry.player_streams.read().await.get(&game_id).cloned();
 
-                            if let Some(player_streams) = player_streams {
-                                let response = GameMessage::GameUpdate(game_state.clone());
-                                println!("Response: {:?}", response);
+                            // if let Some(player_streams) = player_streams {
+                            //     let response = GameMessage::GameUpdate(game_state.clone());
+                            //     println!("Response: {:?}", response);
 
-                                player_streams.iter().for_each(|stream| {
-                                    let response = response.clone();
-                                    let stream = stream.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = stream
-                                            .lock()
-                                            .await
-                                            .send(Message::binary(
-                                                serde_json::to_vec(&response).unwrap(),
-                                            ))
-                                            .await
-                                        {
-                                            eprintln!("Error sending message: {}", e);
-                                        }
-                                    });
-                                });
+                            //     player_streams.iter().for_each(|stream| {
+                            //         let response = response.clone();
+                            //         let stream = stream.clone();
+                            //         tokio::spawn(async move {
+                            //             if let Err(e) = stream
+                            //                 .lock()
+                            //                 .await
+                            //                 .send(Message::binary(
+                            //                     serde_json::to_vec(&response).unwrap(),
+                            //                 ))
+                            //                 .await
+                            //             {
+                            //                 eprintln!("Error sending message: {}", e);
+                            //             }
+                            //         });
+                            //     });
+                            // }
+                            let game_channel_read = registry.game_channels.read().await;
+                            let response = GameMessage::GameUpdate(game_state.clone());
+                            if let Some(channel) = game_channel_read.get(&game_id) {
+                                channel.send(response).await?;
                             }
                         }
                     }
@@ -468,6 +502,7 @@ impl GameServer {
                                 }
                             }
                             _ => {
+                                // FIXME: I think it is not relevant
                                 // Invalid game state for move
                                 ws_write
                                     .lock()
@@ -482,129 +517,23 @@ impl GameServer {
                         }
                     }
                 }
-                GameMessage::GameUpdate(msg) => match msg {
-                    GameState::WAITING {
-                        game_id,
-                        creator,
-                        board,
-                        single_bet_size,
-                        min_players,
-                        players,
-                    } => {
-                        println!("In waiting");
-                        println!("{single_bet_size}. {game_id}");
-                        let player_streams =
-                            registry.player_streams.read().await.get(&game_id).cloned();
+                GameMessage::GameUpdate(msg) => {
+                    let game_message = GameMessage::GameUpdate(msg.clone());
 
-                        if let Some(player_streams) = player_streams {
-                            let response = GameMessage::GameUpdate(GameState::WAITING {
-                                game_id,
-                                creator,
-                                board,
-                                single_bet_size,
-                                min_players,
-                                players,
-                            });
-                            println!("Response: {:?}", response);
-
-                            player_streams.iter().for_each(|stream| {
-                                let response = response.clone();
-                                let stream = stream.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = stream
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(
-                                            serde_json::to_vec(&response).unwrap(),
-                                        ))
-                                        .await
-                                    {
-                                        eprintln!("Error sending message: {}", e);
-                                    }
-                                });
-                            });
-                        }
-                        println!("Waiting msg sent");
+                    if broadcast_tx
+                        .send(Message::binary(serde_json::to_vec(&game_message)?))
+                        .is_err()
+                    {
+                        eprintln!("No active receivers");
                     }
-                    GameState::RUNNING {
-                        game_id,
-                        players,
-                        board,
-                        turn_idx,
-                        single_bet_size,
-                    } => {
-                        println!("In running");
-                        println!("{single_bet_size}. {game_id}");
-                        let player_streams =
-                            registry.player_streams.read().await.get(&game_id).cloned();
-
-                        if let Some(player_streams) = player_streams {
-                            let response = GameMessage::GameUpdate(GameState::RUNNING {
-                                game_id,
-                                players,
-                                board,
-                                turn_idx,
-                                single_bet_size,
-                            });
-                            println!("Response: {:?}", response);
-
-                            player_streams.iter().for_each(|stream| {
-                                let response = response.clone();
-                                let stream = stream.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = stream
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(
-                                            serde_json::to_vec(&response).unwrap(),
-                                        ))
-                                        .await
-                                    {
-                                        eprintln!("Error sending message: {}", e);
-                                    }
-                                });
-                            });
-                        }
-                        println!("Running msg sent");
-                    }
-                    GameState::FINISHED {
-                        game_id,
+                    if let GameState::FINISHED {
                         loser_idx,
-                        board,
                         players,
                         single_bet_size,
-                    } => {
-                        println!("Game finished");
-                        let player_streams =
-                            registry.player_streams.read().await.get(&game_id).cloned();
-
-                        if let Some(player_streams) = player_streams {
-                            let response = GameMessage::GameUpdate(GameState::FINISHED {
-                                game_id,
-                                loser_idx,
-                                board,
-                                players: players.clone(),
-                                single_bet_size,
-                            });
-
-                            player_streams.iter().for_each(|stream| {
-                                let response = response.clone();
-                                let stream = stream.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = stream
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(
-                                            serde_json::to_vec(&response).unwrap(),
-                                        ))
-                                        .await
-                                    {
-                                        eprintln!("Error sending message: {}", e);
-                                    }
-                                });
-                            });
-                        }
-
+                        ..
+                    } = msg
+                    {
+                        // Update the db
                         let winning_amount = single_bet_size / ((players.len() - 1) as f64);
 
                         let user_ids: Vec<u32> = players
@@ -620,13 +549,53 @@ impl GameServer {
                         )
                         .await?;
                     }
-                    _ => {}
-                },
+                    // match msg {
+                    //     GameState::FINISHED {
+                    //         game_id,
+                    //         loser_idx,
+                    //         board,
+                    //         players,
+                    //         single_bet_size,
+                    //     } => {
+                    //         // println!("Game finished");
+                    //         // let player_streams =
+                    //         //     registry.player_streams.read().await.get(&game_id).cloned();
+
+                    //         // if let Some(player_streams) = player_streams {
+                    //         //     let response = GameMessage::GameUpdate(GameState::FINISHED {
+                    //         //         game_id,
+                    //         //         loser_idx,
+                    //         //         board,
+                    //         //         players: players.clone(),
+                    //         //         single_bet_size,
+                    //         //     });
+
+                    //         //     player_streams.iter().for_each(|stream| {
+                    //         //         let response = response.clone();
+                    //         //         let stream = stream.clone();
+                    //         //         tokio::spawn(async move {
+                    //         //             if let Err(e) = stream
+                    //         //                 .lock()
+                    //         //                 .await
+                    //         //                 .send(Message::binary(
+                    //         //                     serde_json::to_vec(&response).unwrap(),
+                    //         //                 ))
+                    //         //                 .await
+                    //         //             {
+                    //         //                 eprintln!("Error sending message: {}", e);
+                    //         //             }
+                    //         //         });
+                    //         //     });
+                    //         // }
+                    //     }
+                    //     _ => {}
+                    // }
+                }
                 _ => {}
             }
         }
 
-        handlers.await?;
+        let _ = tokio::try_join!(readers_task, writers_task);
         Ok(())
     }
 }
