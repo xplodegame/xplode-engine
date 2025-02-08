@@ -1,7 +1,4 @@
-use common::{
-    db::{self, establish_connection},
-    utils::Currency,
-};
+use common::db::{self, establish_connection};
 use futures_util::{
     lock::Mutex,
     stream::{SplitSink, StreamExt},
@@ -27,6 +24,8 @@ pub enum GameState {
         creator: Player,
         board: Board,
         single_bet_size: f64,
+        min_players: u32,
+        players: Vec<Player>,
     },
     RUNNING {
         game_id: String,
@@ -37,7 +36,7 @@ pub enum GameState {
     },
     FINISHED {
         game_id: String,
-        winner_idx: usize,
+        loser_idx: usize,
         board: Board,
         players: Vec<Player>,
         single_bet_size: f64,
@@ -53,6 +52,13 @@ pub enum GameMessage {
     Play {
         player_id: String,
         single_bet_size: f64,
+        min_players: u32,
+        bombs: u32,
+        grid: u32,
+    },
+    Join {
+        game_id: String,
+        player_id: String,
     },
     MakeMove {
         game_id: String,
@@ -117,7 +123,7 @@ impl GameServer {
         let ws_write = Arc::new(Mutex::new(ws_write));
 
         // Create a channel for this game connection
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(500);
 
         // Spawn a task to handle incoming WebSocket messages
         let handlers = tokio::spawn({
@@ -152,16 +158,21 @@ impl GameServer {
                 GameMessage::Play {
                     player_id,
                     single_bet_size,
+                    min_players,
+                    bombs,
+                    grid,
                 } => {
                     let games_read = registry.games.read().await;
 
+                    //TODO: Think of a better way to do this
                     let matched_game = games_read.iter().find_map(|(game_id, state)| {
                         if let GameState::WAITING {
                             single_bet_size: size,
+                            min_players: mp,
                             ..
                         } = state
                         {
-                            if *size == single_bet_size {
+                            if *size == single_bet_size && *mp == min_players {
                                 Some((game_id.clone(), state.clone()))
                             } else {
                                 None
@@ -177,6 +188,8 @@ impl GameServer {
                             creator,
                             board,
                             single_bet_size,
+                            min_players,
+                            mut players,
                             ..
                         },
                     )) = matched_game
@@ -184,20 +197,30 @@ impl GameServer {
                         // Now we can safely create a new player and prepare the new game state
                         println!("Game has begun");
                         let player = Player::new(player_id);
-                        let players = vec![creator.clone(), player.clone()];
+                        players.push(player);
 
-                        let new_game_state = GameState::RUNNING {
-                            game_id: game_id.clone(),
-                            players: players.clone(),
-                            board: board.clone(),
-                            turn_idx: 0,
-                            single_bet_size,
+                        let new_game_state = if players.len() < min_players as usize {
+                            GameState::WAITING {
+                                game_id: game_id.clone(),
+                                creator: creator.clone(),
+                                board: board.clone(),
+                                single_bet_size,
+                                min_players,
+                                players: players.clone(),
+                            }
+                        } else {
+                            GameState::RUNNING {
+                                game_id: game_id.clone(),
+                                players: players.clone(),
+                                board: board.clone(),
+                                turn_idx: 0,
+                                single_bet_size,
+                            }
                         };
 
-                        {
-                            let mut games_write = registry.games.write().await;
-                            games_write.insert(game_id.clone(), new_game_state.clone());
-                        }
+                        let mut games_write = registry.games.write().await;
+                        games_write.insert(game_id.clone(), new_game_state.clone());
+
                         let mut player_streams_write = registry.player_streams.write().await;
                         player_streams_write
                             .entry(game_id.clone())
@@ -209,43 +232,27 @@ impl GameServer {
                         if let Some(channel) = game_channels_read.get(&game_id) {
                             // Broadcast game state to all players
                             let response = GameMessage::GameUpdate(new_game_state.clone());
-                            channel.send(response.clone()).await?;
+                            channel.send(response).await?;
                         }
-
-                        let player0_id: u32 = players[0].id.parse()?;
-                        let player0_wallet =
-                            db::get_user_wallet(&pool, player0_id, Currency::SOL).await?;
-
-                        let player1_id: u32 = players[1].id.parse()?;
-                        let player1_wallet =
-                            db::get_user_wallet(&pool, player1_id, Currency::SOL).await?;
-
-                        let player0_balance = player0_wallet.balance - single_bet_size;
-                        let player1_balance = player1_wallet.balance - single_bet_size;
-                        db::update_user_wallet(&pool, player0_id, Currency::SOL, player0_balance)
-                            .await?;
-                        db::update_user_wallet(&pool, player1_id, Currency::SOL, player1_balance)
-                            .await?;
                     } else {
                         println!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
-                        let board = Board::new(5);
+                        let board = Board::new(grid as usize, bombs as usize);
                         let player = Player::new(player_id);
 
                         let game_state = GameState::WAITING {
                             game_id: game_id.clone(),
-                            creator: player,
+                            creator: player.clone(),
                             board,
                             single_bet_size,
+                            min_players,
+                            players: vec![player.clone()],
                         };
 
-                        println!("Taking the write lock");
-
                         // Store game state and channel
-                        {
-                            let mut games_write = registry.games.write().await;
-                            games_write.insert(game_id.clone(), game_state.clone());
-                        }
+                        let mut games_write = registry.games.write().await;
+                        games_write.insert(game_id.clone(), game_state.clone());
+
                         let mut game_channels_write = registry.game_channels.write().await;
                         game_channels_write.insert(game_id.clone(), tx.clone());
 
@@ -255,8 +262,8 @@ impl GameServer {
                             .or_insert_with(Vec::new)
                             .push(ws_write.clone());
 
-                        println!("Sending message to client");
-                        // Send back the game state
+                        // Send back the game state to the creater
+                        //FIXME: Better solution required
                         let response = GameMessage::GameUpdate(game_state);
                         if let Err(e) = ws_write
                             .lock()
@@ -268,10 +275,74 @@ impl GameServer {
                         }
                     }
                 }
+                GameMessage::Join { game_id, player_id } => {
+                    println!("Request to join:: {:?} game", game_id);
+                    let games_read = registry.games.read().await;
+                    let game_state = games_read.get(&game_id);
+                    if let Some(GameState::WAITING {
+                        game_id,
+                        creator,
+                        board,
+                        single_bet_size,
+                        min_players,
+                        players,
+                    }) = game_state
+                    {
+                        let new_player = Player::new(player_id);
+                        let mut players = players.clone();
+                        players.push(new_player);
+
+                        let new_game_state = if players.len() < *min_players as usize {
+                            GameState::WAITING {
+                                game_id: game_id.clone(),
+                                creator: creator.clone(),
+                                board: board.clone(),
+                                single_bet_size: *single_bet_size,
+                                min_players: *min_players,
+                                players,
+                            }
+                        } else {
+                            GameState::RUNNING {
+                                game_id: game_id.clone(),
+                                players: players,
+                                board: board.clone(),
+                                turn_idx: 0,
+                                single_bet_size: *single_bet_size,
+                            }
+                        };
+                        let mut games_write = registry.games.write().await;
+                        games_write.insert(game_id.clone(), new_game_state.clone());
+
+                        let mut player_streams_write = registry.player_streams.write().await;
+                        player_streams_write
+                            .entry(game_id.clone())
+                            .or_insert_with(Vec::new)
+                            .push(ws_write.clone());
+
+                        // Get the channel for this game
+                        let game_channels_read = registry.game_channels.read().await;
+                        if let Some(channel) = game_channels_read.get(game_id) {
+                            // Broadcast game state to all players
+                            let response = GameMessage::GameUpdate(new_game_state.clone());
+                            channel.send(response).await?;
+                        }
+                    } else {
+                        let response =
+                            GameMessage::Error("this game is not accepting players".to_string());
+                        if let Err(err) = ws_write
+                            .lock()
+                            .await
+                            .send(Message::binary(serde_json::to_vec(&response)?))
+                            .await
+                        {
+                            eprintln!("Failed to send error message to the client:: {:?}", err);
+                        }
+                    }
+                }
                 GameMessage::Stop { game_id, abort } => {
                     let mut games_write = registry.games.write().await;
                     if !abort {
-                        // Meaning the other person has won
+                        // Meaning other players won
                         if let Some(game_state) = games_write.get_mut(&game_id) {
                             if let GameState::RUNNING {
                                 players,
@@ -283,7 +354,7 @@ impl GameServer {
                             {
                                 *game_state = GameState::FINISHED {
                                     game_id: game_id.clone(),
-                                    winner_idx: (*turn_idx + 1) % 2,
+                                    loser_idx: (*turn_idx + 1) % 2,
                                     board: board.clone(),
                                     players: players.clone(),
                                     single_bet_size: single_bet_size.clone(),
@@ -298,37 +369,37 @@ impl GameServer {
                         }
                     } else {
                         if let Some(game_state) = games_write.get_mut(&game_id) {
-                            if let GameState::RUNNING {
-                                players,
-                                single_bet_size,
-                                ..
-                            } = game_state
-                            {
-                                let player0_id: u32 = players[0].id.parse()?;
-                                let player0 =
-                                    db::get_user_wallet(&pool, player0_id, Currency::SOL).await?;
+                            // if let GameState::RUNNING {
+                            //     players,
+                            //     single_bet_size,
+                            //     ..
+                            // } = game_state
+                            // {
+                            //     let player0_id: u32 = players[0].id.parse()?;
+                            //     let player0 =
+                            //         db::get_user_wallet(&pool, player0_id, Currency::SOL).await?;
 
-                                let player1_id: u32 = players[1].id.parse()?;
-                                let player1 =
-                                    db::get_user_wallet(&pool, player1_id, Currency::SOL).await?;
+                            //     let player1_id: u32 = players[1].id.parse()?;
+                            //     let player1 =
+                            //         db::get_user_wallet(&pool, player1_id, Currency::SOL).await?;
 
-                                let player0_balance = player0.balance + *single_bet_size;
-                                let player1_balance = player1.balance + *single_bet_size;
-                                db::update_user_wallet(
-                                    &pool,
-                                    player0_id,
-                                    Currency::SOL,
-                                    player0_balance,
-                                )
-                                .await?;
-                                db::update_user_wallet(
-                                    &pool,
-                                    player1_id,
-                                    Currency::SOL,
-                                    player1_balance,
-                                )
-                                .await?;
-                            }
+                            //     let player0_balance = player0.balance + *single_bet_size;
+                            //     let player1_balance = player1.balance + *single_bet_size;
+                            //     db::update_user_wallet(
+                            //         &pool,
+                            //         player0_id,
+                            //         Currency::SOL,
+                            //         player0_balance,
+                            //     )
+                            //     .await?;
+                            //     db::update_user_wallet(
+                            //         &pool,
+                            //         player1_id,
+                            //         Currency::SOL,
+                            //         player1_balance,
+                            //     )
+                            //     .await?;
+                            // }
 
                             *game_state = GameState::ABORTED {
                                 game_id: game_id.clone(),
@@ -376,17 +447,17 @@ impl GameServer {
                                 // TODO add backend logic to check turn
                                 if board.mine(x, y) {
                                     // If mine is hit, determine winner
-                                    let winner = (*turn_idx + 1) % 2;
+                                    let loser = turn_idx;
                                     *game_state = GameState::FINISHED {
                                         game_id: game_id.clone(),
-                                        winner_idx: winner,
+                                        loser_idx: *loser,
                                         board: board.clone(),
                                         players: players.clone(),
                                         single_bet_size: single_bet_size.clone(),
                                     };
                                 } else {
                                     // Switch turns
-                                    *turn_idx = (*turn_idx + 1) % 2;
+                                    *turn_idx = (*turn_idx + 1) % players.len();
                                 }
 
                                 // Get the channel to broadcast game state
@@ -412,6 +483,49 @@ impl GameServer {
                     }
                 }
                 GameMessage::GameUpdate(msg) => match msg {
+                    GameState::WAITING {
+                        game_id,
+                        creator,
+                        board,
+                        single_bet_size,
+                        min_players,
+                        players,
+                    } => {
+                        println!("In waiting");
+                        println!("{single_bet_size}. {game_id}");
+                        let player_streams =
+                            registry.player_streams.read().await.get(&game_id).cloned();
+
+                        if let Some(player_streams) = player_streams {
+                            let response = GameMessage::GameUpdate(GameState::WAITING {
+                                game_id,
+                                creator,
+                                board,
+                                single_bet_size,
+                                min_players,
+                                players,
+                            });
+                            println!("Response: {:?}", response);
+
+                            player_streams.iter().for_each(|stream| {
+                                let response = response.clone();
+                                let stream = stream.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = stream
+                                        .lock()
+                                        .await
+                                        .send(Message::binary(
+                                            serde_json::to_vec(&response).unwrap(),
+                                        ))
+                                        .await
+                                    {
+                                        eprintln!("Error sending message: {}", e);
+                                    }
+                                });
+                            });
+                        }
+                        println!("Waiting msg sent");
+                    }
                     GameState::RUNNING {
                         game_id,
                         players,
@@ -455,7 +569,7 @@ impl GameServer {
                     }
                     GameState::FINISHED {
                         game_id,
-                        winner_idx,
+                        loser_idx,
                         board,
                         players,
                         single_bet_size,
@@ -467,7 +581,7 @@ impl GameServer {
                         if let Some(player_streams) = player_streams {
                             let response = GameMessage::GameUpdate(GameState::FINISHED {
                                 game_id,
-                                winner_idx,
+                                loser_idx,
                                 board,
                                 players: players.clone(),
                                 single_bet_size,
@@ -491,18 +605,18 @@ impl GameServer {
                             });
                         }
 
-                        // TODO can try to make just two db calls instead of first deducting single bet size from both users and then addding 2* betsize in one
-                        let winner_user_id: u32 = players[winner_idx].id.parse()?;
-                        let winner_wallet =
-                            db::get_user_wallet(&pool, winner_user_id, Currency::SOL).await?;
+                        let winning_amount = single_bet_size / ((players.len() - 1) as f64);
 
-                        let winner_balance =
-                            winner_wallet.balance + 2.0 * (single_bet_size as i32) as f64;
-                        db::update_user_wallet(
+                        let user_ids: Vec<u32> = players
+                            .iter()
+                            .map(|p| p.id.parse::<u32>().unwrap())
+                            .collect();
+                        db::update_player_balances(
                             &pool,
-                            winner_user_id,
-                            Currency::SOL,
-                            winner_balance,
+                            &user_ids,
+                            loser_idx,
+                            single_bet_size,
+                            winning_amount,
                         )
                         .await?;
                     }

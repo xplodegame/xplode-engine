@@ -35,12 +35,13 @@ impl DistributedSeedGen {
     }
 }
 
-pub fn get_bomb_coords(seed: u64, count: usize) -> Vec<u64> {
+pub fn get_bomb_coords(bombs_needed: usize, dimension: u64) -> Vec<u64> {
+    let seed = rand::random();
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mut coords = HashSet::new();
-    while coords.len() < count {
-        coords.insert(rng.next_u64() % 25);
+    while coords.len() < bombs_needed {
+        coords.insert(rng.next_u64() % (dimension * dimension));
     }
 
     coords.into_iter().collect()

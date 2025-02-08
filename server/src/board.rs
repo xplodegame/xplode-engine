@@ -14,12 +14,13 @@ pub enum CellState {
 pub struct Board {
     n: usize, // it would be nXn
     grid: Vec<Vec<CellState>>,
+    //TODO: It should be either continuous or scattered
     bomb_coordinates: Vec<u64>,
 }
 
 impl Board {
-    pub fn new(n: usize) -> Board {
-        let bomb_coords = get_bomb_coords(rand::random::<u64>() % 25, 5);
+    pub fn new(n: usize, bombs: usize) -> Board {
+        let bomb_coords = get_bomb_coords(bombs, n as u64);
 
         Board {
             n,
