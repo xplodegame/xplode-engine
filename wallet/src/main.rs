@@ -2,44 +2,22 @@ use std::str::FromStr;
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
-use common::{db, models, utils};
+use common::{
+    db,
+    models::{self, Pnl},
+    utils::{self, Currency, DepositRequest, UserDetailsRequest, WithdrawRequest},
+};
 use db::establish_connection;
 use deposits::DepositService;
 use dotenv::dotenv;
 use models::{User, Wallet};
 
-use serde::Deserialize;
 use serde_json::json;
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Sqlite};
-use utils::{Currency, TxType};
+use utils::TxType;
 
 const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
-
-#[derive(Deserialize)]
-struct UserDetailsRequest {
-    name: String,
-    email: String,
-    clerk_id: String,
-}
-
-#[derive(Deserialize)]
-struct DepositRequest {
-    user_id: u32,
-    amount: f64,
-    currency: Currency,
-    tx_type: TxType,
-    tx_hash: String,
-}
-
-#[derive(Deserialize)]
-struct WithdrawRequest {
-    user_id: u32,
-    amount: f64,
-    currency: Currency,
-    withdraw_address: String,
-}
-
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
@@ -65,33 +43,23 @@ async fn fetch_or_create_user(
 
     match existing_user {
         Some(user) => {
-            // User exists, return their details
-            let wallet: Option<Wallet> =
+            let wallet: Wallet =
                 sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
                     .bind(user.id)
-                    .bind("SOL".to_string())
-                    .fetch_optional(&mut conn)
+                    .bind(Currency::SOL.to_string())
+                    .fetch_one(&mut conn)
                     .await
                     .expect("Error fetching wallet");
 
-            if wallet.is_some() {
-                HttpResponse::Created().json(json!({
-                    "id": user.id,
-                    "currency": "SOL",
-                    "balance": wallet.unwrap().balance,
-                    "user_pda": user.user_pda
+            HttpResponse::Created().json(json!({
+                "id": user.id,
+                "currency": "SOL",
+                "balance": wallet.balance,
+                "user_pda": user.user_pda
 
-                })) // Return the created user details
-            } else {
-                HttpResponse::Created().json(json!({
-                    "id": user.id,
-                    "currency": "SOL",
-                    "balance": 0,
-                    "user_pda": user.user_pda
-
-                }))
-            }
+            }))
         }
+
         None => {
             // create user program derived address and add a listener to its account changes
             // TODO: check if user pda already exists and creat a new
@@ -116,36 +84,66 @@ async fn fetch_or_create_user(
                 .await
                 .expect("Error fetching newly created user");
 
-            let wallet: Option<Wallet> =
-                sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
-                    .bind(created_user.id)
-                    .bind("SOL".to_string())
-                    .fetch_optional(&mut conn)
-                    .await
-                    .expect("Error fetching wallet");
+            db::create_user_and_update_tables(&pool, &created_user)
+                .await
+                .expect("Failed to update tables");
 
-            if wallet.is_some() {
-                HttpResponse::Created().json(json!({
-                    "user_id": created_user.id,
-                    "currency": "SOL",
-                    "balance": wallet.unwrap().balance,
-                    "user_pda": user_pda.to_string()
-
-                })) // Return the created user details
-            } else {
-                HttpResponse::Created().json(json!({
-                    "user_id": created_user.id,
-                    "currency": "SOL",
-                    "balance": 0,
-                    "user_pda": user_pda.to_string()
-                }))
-            }
+            HttpResponse::Created().json(json!({
+                "user_id": created_user.id,
+                "currency": "SOL",
+                "balance": 0,
+                "user_pda": user_pda.to_string()
+            }))
         }
     }
 }
 
+#[actix_web::get("/pnl/{user_id}")]
+async fn get_user_pnl(
+    user_id: web::Path<String>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    let user_id: u32 = user_id.into_inner().parse().unwrap();
+    let AppState {
+        pool,
+        deposit_service: _,
+    } = &**app_state;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let user_pnl: Pnl = sqlx::query_as("SELECT * FROM pnl where user_id = ?")
+        .bind(user_id)
+        .fetch_one(&mut conn)
+        .await
+        .expect("Error fetching wallet");
+
+    HttpResponse::Ok().json(user_pnl)
+}
+// user history endpoint
+
+// total pnl
+#[actix_web::get("/leaderboard")]
+async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
+    let AppState {
+        pool,
+        deposit_service: _,
+    } = &**app_state;
+    println!("Leaderboard request arrived");
+
+    let mut conn = pool.acquire().await.unwrap();
+
+    let pnls: Vec<Pnl> = sqlx::query_as("SELECT * from pnl ORDER BY profit DESC")
+        .fetch_all(&mut conn)
+        .await
+        .expect("Failed to fetch all pnls");
+
+    HttpResponse::Ok().json(json!(pnls))
+}
+
 #[actix_web::post("/deposit")]
-async fn deposit(req: web::Json<DepositRequest>, app_state: web::Data<AppState>) -> impl Responder {
+async fn deposit(
+    deposit_request: web::Json<DepositRequest>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
     let AppState {
         pool,
         deposit_service: _,
@@ -157,59 +155,48 @@ async fn deposit(req: web::Json<DepositRequest>, app_state: web::Data<AppState>)
         .await
         .expect("Failed to get a connection from the pool");
 
-    let wallet: Option<Wallet> =
-        sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
-            .bind(req.user_id)
-            .bind(req.currency.to_string())
-            .fetch_optional(&mut conn)
-            .await
-            .expect("Error fetching wallet");
+    let wallet: Wallet = sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
+        .bind(deposit_request.user_id)
+        .bind(deposit_request.currency.to_string())
+        .fetch_one(&mut conn)
+        .await
+        .expect("Error fetching wallet");
 
     println!("Wallet: {:?}", wallet);
 
-    let mut new_balance = req.amount;
-    if let Some(wallet) = wallet {
-        new_balance = new_balance + wallet.balance;
-        sqlx::query("update wallet set balance = ? where user_id = ? and currency = ?")
-            .bind(new_balance)
-            .bind(req.user_id)
-            .bind(req.currency.to_string())
-            .execute(&mut conn)
-            .await
-            .expect("Error updating wallet balance");
-    } else {
-        sqlx::query("INSERT INTO wallet (user_id, currency, balance) VALUES (?, ?, ?)")
-            .bind(req.user_id) // Bind the user_id
-            .bind(req.currency.to_string()) // Set a default currency, e.g., USD
-            .bind(req.amount) // Initialize balance to deposit amount
-            .execute(&mut conn)
-            .await
-            .expect("Error creating initial wallet");
-    }
+    let new_balance = deposit_request.amount + wallet.balance;
+
+    sqlx::query("update wallet set balance = ? where user_id = ? and currency = ?")
+        .bind(new_balance)
+        .bind(deposit_request.user_id)
+        .bind(deposit_request.currency.to_string())
+        .execute(&mut conn)
+        .await
+        .expect("Error updating wallet balance");
 
     // // Record the transaction
     sqlx::query(
         "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(req.user_id)
-    .bind(req.amount)
-    .bind(req.currency.to_string())
-    .bind(req.tx_type.to_string())
-    .bind(req.tx_hash.clone())
+    .bind(deposit_request.user_id)
+    .bind(deposit_request.amount)
+    .bind(deposit_request.currency.to_string())
+    .bind(deposit_request.tx_type.to_string())
+    .bind(deposit_request.tx_hash.clone())
     .execute(&mut conn)
        .await
     .expect("Error recording transaction");
 
     HttpResponse::Ok().json(json!({
-        "user_id": req.user_id,
-        "currency": req.currency,
+        "user_id": deposit_request.user_id,
+        "currency": deposit_request.currency,
         "balance": new_balance
     }))
 }
 
 #[actix_web::post("/withdraw")]
 async fn withdraw(
-    req: web::Json<WithdrawRequest>,
+    withdraw_req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     println!("Attempting to withdraw");
@@ -226,21 +213,21 @@ async fn withdraw(
     // Fetch the user's current wallet balance
     let current_balance: (f64,) =
         sqlx::query_as("SELECT balance FROM wallet WHERE user_id = ? and currency = ?")
-            .bind(req.user_id)
-            .bind(req.currency.to_string())
+            .bind(withdraw_req.user_id)
+            .bind(withdraw_req.currency.to_string())
             .fetch_one(&mut conn)
             .await
             .expect("Error loading user");
 
-    if req.amount > current_balance.0 {
+    if withdraw_req.amount > current_balance.0 {
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
     //FIXME: transfer the req.amount to user
     let withdraw_txhash = deposit_service
         .withdraw_to_user_from_treasury(
-            req.withdraw_address.clone(),
-            (req.amount * SOL_TO_LAMPORTS as f64) as u64,
+            withdraw_req.withdraw_address.clone(),
+            (withdraw_req.amount * SOL_TO_LAMPORTS as f64) as u64,
         )
         .await
         .unwrap();
@@ -248,13 +235,13 @@ async fn withdraw(
     println!("Withdrawn tx hash: {:?}", withdraw_txhash);
 
     // Deduct the amount from the user's wallet
-    let new_balance = current_balance.0 - req.amount;
+    let new_balance = current_balance.0 - withdraw_req.amount;
 
     // Update the user's wallet balance
     sqlx::query("UPDATE wallet SET balance = ? WHERE user_id = ? and currency = ?")
         .bind(new_balance)
-        .bind(req.user_id)
-        .bind(req.currency.to_string())
+        .bind(withdraw_req.user_id)
+        .bind(withdraw_req.currency.to_string())
         .execute(&mut conn)
         .await
         .expect("Error updating user wallet");
@@ -263,9 +250,9 @@ async fn withdraw(
     sqlx::query(
         "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(req.user_id)
-    .bind(req.amount)
-    .bind(req.currency.to_string())
+    .bind(withdraw_req.user_id)
+    .bind(withdraw_req.amount)
+    .bind(withdraw_req.currency.to_string())
     .bind(TxType::WITHDRAWAL.to_string())
     .bind(withdraw_txhash.clone())
     .execute(&mut conn)
@@ -274,12 +261,12 @@ async fn withdraw(
 
     println!(
         "Withdrawal of {} successful. New balance: {}",
-        req.amount, new_balance
+        withdraw_req.amount, new_balance
     );
     return HttpResponse::Ok().json(json!(
         {
-            "user_id": req.user_id,
-            "currency": req.currency,
+            "user_id": withdraw_req.user_id,
+            "currency": withdraw_req.currency,
             "balance": new_balance,
             "tx_hash": withdraw_txhash.clone(),
         }
@@ -316,6 +303,7 @@ async fn main() -> std::io::Result<()> {
             .service(deposit)
             .service(withdraw)
             .service(fetch_or_create_user)
+            .service(get_leaderboard)
     })
     .bind("127.0.0.1:8080")?
     .run()

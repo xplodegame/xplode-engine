@@ -15,6 +15,30 @@ pub enum TxType {
     WITHDRAWAL,
 }
 
+#[derive(Deserialize)]
+pub struct UserDetailsRequest {
+    pub name: String,
+    pub email: String,
+    pub clerk_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct DepositRequest {
+    pub user_id: u32,
+    pub amount: f64,
+    pub currency: Currency,
+    pub tx_type: TxType,
+    pub tx_hash: String,
+}
+
+#[derive(Deserialize)]
+pub struct WithdrawRequest {
+    pub user_id: u32,
+    pub amount: f64,
+    pub currency: Currency,
+    pub withdraw_address: String,
+}
+
 impl_from_str_for_enum!(Currency, INR, SOL, USDC);
 impl_to_string_for_enum!(Currency, INR, SOL, USDC);
 impl_from_str_for_enum!(TxType, DEPOSIT, WITHDRAWAL);
