@@ -53,6 +53,8 @@ pub enum GameMessage {
         player_id: String,
         single_bet_size: f64,
         min_players: u32,
+        bombs: u32,
+        grid: u32,
     },
     Join {
         game_id: String,
@@ -157,6 +159,8 @@ impl GameServer {
                     player_id,
                     single_bet_size,
                     min_players,
+                    bombs,
+                    grid,
                 } => {
                     let games_read = registry.games.read().await;
 
@@ -233,7 +237,7 @@ impl GameServer {
                     } else {
                         println!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
-                        let board = Board::new(5);
+                        let board = Board::new(grid as usize, bombs as usize);
                         let player = Player::new(player_id);
 
                         let game_state = GameState::WAITING {
