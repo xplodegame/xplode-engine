@@ -4076,6 +4076,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-websockets",
+ "tracing",
  "uuid",
  "wallet",
 ]

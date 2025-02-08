@@ -38,3 +38,5 @@ sqlx = { version = "0.6", features = ["sqlite", "runtime-tokio-rustls"] }
 anchor-lang = "0.30.1"
 solana-sdk = "1.17.3"
 solana-client = "1.17.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
