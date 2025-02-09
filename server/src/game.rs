@@ -75,7 +75,7 @@ pub enum GameMessage {
 #[derive(Clone)]
 pub struct GameRegistry {
     games: Arc<RwLock<HashMap<String, GameState>>>,
-    game_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GameMessage>>>>,
+    game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     // player_streams: Arc<
     //     RwLock<HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>>,
     // >,
@@ -107,6 +107,7 @@ impl GameServer {
 
             let tx = tx.clone();
             tokio::spawn(async move {
+                println!("Establishing connection");
                 if let Err(e) = GameServer::handle_connection(registry, stream, tx).await {
                     eprintln!("Error handling connection: {}", e);
                 }
@@ -126,19 +127,21 @@ impl GameServer {
         // ✅ Each client gets its own Receiver
         let mut broadcast_rx = broadcast_tx.subscribe();
 
-        let (ws_sink, mut ws_stream) = ws_stream.split();
+        let (ws_write, mut ws_read) = ws_stream.split();
 
-        let ws_write = Arc::new(Mutex::new(ws_sink));
+        let ws_write = Arc::new(Mutex::new(ws_write));
 
         // Create a channel for this game connection
         let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(500);
-        let server_tx_clone = server_tx.clone();
+        let server_tx = Arc::new(server_tx);
 
         // Spawn a task to handle incoming WebSocket messages
-        let readers_task = tokio::spawn(async move {
+        let readers_task = tokio::spawn({
+            let server_tx = server_tx.clone();
             async move {
-                while let Some(msg) = ws_stream.next().await {
-                    let server_tx_inner = server_tx_clone.clone();
+                while let Some(msg) = ws_read.next().await {
+                    println!("Incoming msg");
+                    let server_tx_inner = server_tx.clone();
 
                     match msg {
                         Ok(message) => {
@@ -164,10 +167,10 @@ impl GameServer {
             }
         });
 
-        let ws_write_2 = ws_write.clone();
+        let ws_write_clone = ws_write.clone();
         let writers_task = tokio::spawn(async move {
             while let Ok(msg) = broadcast_rx.recv().await {
-                let mut sink = ws_write_2.lock().await;
+                let mut sink = ws_write_clone.lock().await;
                 if sink.send(msg.into()).await.is_err() {
                     // FIXME: Player id to print
                     eprintln!("Player disconnected");
@@ -186,6 +189,7 @@ impl GameServer {
                     bombs,
                     grid,
                 } => {
+                    println!("Play request");
                     let games_read = registry.games.read().await;
 
                     //TODO: Think of a better way to do this
@@ -518,6 +522,7 @@ impl GameServer {
                     }
                 }
                 GameMessage::GameUpdate(msg) => {
+                    println!("Game update here");
                     let game_message = GameMessage::GameUpdate(msg.clone());
 
                     if broadcast_tx
