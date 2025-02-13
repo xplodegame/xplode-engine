@@ -73,6 +73,7 @@ pub enum GameMessage {
         game_id: String,
         abort: bool,
     },
+    Ping,
     GameUpdate(GameState),
     Error(String),
 }
@@ -377,6 +378,17 @@ impl GameServer {
         // Process game messages
         while let Some(message) = server_rx.recv().await {
             match message {
+                GameMessage::Ping => {
+                    let response = "Pong".to_string();
+                    if let Err(e) = ws_write
+                        .lock()
+                        .await
+                        .send(Message::binary(serde_json::to_vec(&response)?))
+                        .await
+                    {
+                        eprintln!("Error sending GameUpdate message: {}", e);
+                    }
+                }
                 GameMessage::Play {
                     player_id,
                     single_bet_size,
