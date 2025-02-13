@@ -1,6 +1,7 @@
 use common::agg_mod;
 //use clap::{Parser, Subcommand};
 // use game::GameManager;
+use dotenv::dotenv;
 use game::GameServer;
 
 //mod macros;
@@ -25,6 +26,7 @@ agg_mod!(board game player seed_gen);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv().ok();
     //println!("Starting the server");
     //let cli = Cli::parse();
     //
@@ -42,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     //}
     //
 
-    let game_server = GameServer::new();
+    let game_server = GameServer::new().await;
     game_server.start("127.0.0.1:3000").await?;
 
     Ok(())
