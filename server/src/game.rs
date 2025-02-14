@@ -73,7 +73,9 @@ pub enum GameMessage {
         game_id: String,
         abort: bool,
     },
-    Ping,
+    Ping {
+        game_id: Option<String>,
+    },
     GameUpdate(GameState),
     Error(String),
 }
@@ -378,7 +380,13 @@ impl GameServer {
         // Process game messages
         while let Some(message) = server_rx.recv().await {
             match message {
-                GameMessage::Ping => {
+                GameMessage::Ping { game_id } => {
+                    if let Some(game_id) = game_id {
+                        registry
+                            .subscribe_to_channel(server_id.clone(), game_id, ws_write.clone())
+                            .await;
+                    }
+
                     let response = "Pong".to_string();
                     if let Err(e) = ws_write
                         .lock()
@@ -418,11 +426,15 @@ impl GameServer {
                     });
                     drop(games_read);
                     if matched_game.is_none() {
+                        println!("Loading game from memory");
                         // try to match game from redis
 
                         registry.load_game_state().await;
+
                         // FIXME: Remove redundant checking
                         let games_read = registry.games.read().await;
+
+                        println!("Keys length after: {:?}", games_read.keys().len());
                         matched_game = games_read.iter().find_map(|(game_id, state)| {
                             if let GameState::WAITING {
                                 single_bet_size: size,
@@ -500,25 +512,19 @@ impl GameServer {
                         //     .or_insert_with(Vec::new)
                         //     .push(ws_write.clone());
 
+                        let mut game_channels_write = registry.game_channels.write().await;
+                        game_channels_write.insert(game_id.clone(), server_tx.clone());
+                        drop(game_channels_write);
+
                         // Get the channel for this game
+                        println!("Getting the channel for this game????");
                         let game_channels_read = registry.game_channels.read().await;
                         if let Some(channel) = game_channels_read.get(&game_id) {
+                            println!("Sending a message to all the players");
                             // Broadcast game state to all players
                             let response = GameMessage::GameUpdate(new_game_state.clone());
                             channel.send(response).await?;
                         }
-
-                        // // need to subscribe so that this stream sink could receive messages
-                        // registry.subscribe_to_channel(server_id, game_id, ws_write.clone());
-
-                        // let wrapper = GameMessageWrapper {
-                        //     server_id,
-                        //     game_message: GameMessage::GameUpdate(new_game_state.clone()),
-                        // };
-
-                        // registry
-                        //     .publish_message(game_id.clone(), wrapper, false)
-                        //     .await;
                     } else {
                         println!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
