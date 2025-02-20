@@ -46,7 +46,7 @@ impl Board {
             // Start of row
             print!("║ ");
 
-            for (_, cell) in row.iter().enumerate() {
+            for cell in row.iter() {
                 match cell {
                     CellState::Mined => {
                         // Diamond with optional value
