@@ -308,8 +308,6 @@ impl GameServer {
         let listener = TcpListener::bind(addr).await?;
         println!("Server listening on {}", addr);
 
-        // let (tx, _rx) = broadcast::channel::<Message>(100);
-
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
             let registry = self.registry.clone();
             let server_id = self.server_id.clone();
@@ -375,19 +373,6 @@ impl GameServer {
                 }
             }
         });
-
-        // let ws_write_clone = ws_write.clone();
-        // let writers_task = tokio::spawn(async move {
-        //     while let Ok(msg) = broadcast_rx.recv().await {
-        //         let mut sink = ws_write_clone.lock().await;
-        //         if sink.send(msg.into()).await.is_err() {
-        //             // FIXME: Player id to print
-        //             eprintln!("Player disconnected");
-        //             break;
-        //         }
-        //     }
-        // });
-
         // Process game messages
         while let Some(message) = server_rx.recv().await {
             match message {
@@ -518,25 +503,10 @@ impl GameServer {
                                 ws_write.clone(),
                             )
                             .await;
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-
                         let mut game_channels_write = registry.game_channels.write().await;
                         game_channels_write.insert(game_id.clone(), server_tx.clone());
                         drop(game_channels_write);
 
-                        // // Get the channel for this game
-                        // println!("Getting the channel for this game????");
-                        // let game_channels_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channels_read.get(&game_id) {
-                        //     println!("Sending a message to all the players");
-                        //     // Broadcast game state to all players
-                        //     let response = GameMessage::GameUpdate(new_game_state.clone());
-                        //     channel.send(response).await?;
-                        // }
                         let game_message = GameMessage::GameUpdate(new_game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -583,36 +553,6 @@ impl GameServer {
                                 ws_write.clone(),
                             )
                             .await;
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-                        // registry.subscribe_to_channel(server_id, game_id, ws_write.clone());
-
-                        // let wrapper = GameMessageWrapper {
-                        //     server_id,
-                        //     game_message: response,
-                        // };
-
-                        // registry
-                        //     .publish_message(game_id.clone(), wrapper, false)
-                        //     .await;
-
-                        // // FIXME: Better solution required
-                        // let response = GameMessage::GameUpdate(game_state);
-                        // let game_channel_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channel_read.get(&game_id) {
-                        //     channel.send(response.clone()).await?;
-                        // }
-                        // if let Err(e) = ws_write
-                        //     .lock()
-                        //     .await
-                        //     .send(Message::binary(serde_json::to_vec(&response)?))
-                        //     .await
-                        // {
-                        //     eprintln!("Error sending GameUpdate message: {}", e);
-                        // }
                         let game_message = GameMessage::GameUpdate(game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -680,28 +620,6 @@ impl GameServer {
                             )
                             .await;
 
-                        // let wrapper = GameMessageWrapper {
-                        //     server_id,
-                        //     game_message: GameMessage::GameUpdate(new_game_state.clone()),
-                        // };
-
-                        // registry
-                        //     .publish_message(game_id.clone(), wrapper, false)
-                        //     .await;
-
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-
-                        // // Get the channel for this game
-                        // let game_channels_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channels_read.get(&game_id) {
-                        //     // Broadcast game state to all players
-                        //     let response = GameMessage::GameUpdate(new_game_state.clone());
-                        //     channel.send(response).await?;
-                        // }
                         let game_message = GameMessage::GameUpdate(new_game_state.clone());
 
                         let wrapper = GameMessageWrapper {
