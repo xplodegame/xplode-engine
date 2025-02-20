@@ -30,8 +30,7 @@ impl DistributedSeedGen {
     fn seed(&self) -> u64 {
         // take first 8 bytes from hash and parse it to u64
 
-        let seed = u64::from_be_bytes(self.seed_hash[..8].try_into().unwrap());
-        seed
+        u64::from_be_bytes(self.seed_hash[..8].try_into().unwrap())
     }
 }
 

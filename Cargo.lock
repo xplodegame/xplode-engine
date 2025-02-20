@@ -4064,6 +4064,7 @@ dependencies = [
  "clap 4.5.23",
  "colored",
  "common",
+ "dotenv",
  "futures-util",
  "http 1.2.0",
  "lazy_static",
@@ -4076,6 +4077,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-websockets",
+ "tracing",
  "uuid",
  "wallet",
 ]
