@@ -1,6 +1,6 @@
 use common::db::{self, establish_connection};
 use futures_util::{
-    lock::{self, Mutex},
+    lock::Mutex,
     stream::{SplitSink, StreamExt},
     SinkExt,
 };
@@ -165,7 +165,7 @@ impl GameRegistry {
         println!("Loading game");
         let mut game_states = self.games.write().await;
 
-        if let Some(_) = game_states.get(game_id) {
+        if game_states.get(game_id).is_some() {
             println!("Here already game present");
             return;
         }
@@ -182,9 +182,6 @@ impl GameRegistry {
         if let Some(state_json) = redis_value {
             if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
                 game_states.insert(game_id.to_string(), game_state.clone());
-
-                println!("Value inserted");
-                return;
             }
         }
     }
@@ -652,17 +649,17 @@ impl GameServer {
                                 game_id: game_id.clone(),
                                 creator: creator.clone(),
                                 board: board.clone(),
-                                single_bet_size: single_bet_size,
-                                min_players: min_players,
+                                single_bet_size,
+                                min_players,
                                 players,
                             }
                         } else {
                             GameState::RUNNING {
                                 game_id: game_id.clone(),
-                                players: players,
+                                players,
                                 board: board.clone(),
                                 turn_idx: 0,
-                                single_bet_size: single_bet_size,
+                                single_bet_size,
                                 locks: None,
                             }
                         };
@@ -748,7 +745,7 @@ impl GameServer {
                                     loser_idx: (*turn_idx + 1) % 2,
                                     board: board.clone(),
                                     players: players.clone(),
-                                    single_bet_size: single_bet_size.clone(),
+                                    single_bet_size: *single_bet_size,
                                 };
 
                                 // asyncrhonously save the state in redis
@@ -774,28 +771,26 @@ impl GameServer {
                                     .await;
                             }
                         }
-                    } else {
-                        if let Some(game_state) = games_write.get_mut(&game_id) {
-                            *game_state = GameState::ABORTED {
-                                game_id: game_id.clone(),
-                            };
+                    } else if let Some(game_state) = games_write.get_mut(&game_id) {
+                        *game_state = GameState::ABORTED {
+                            game_id: game_id.clone(),
+                        };
 
-                            // let game_channel_read = registry.game_channels.read().await;
-                            // let response = GameMessage::GameUpdate(game_state.clone());
-                            // if let Some(channel) = game_channel_read.get(&game_id) {
-                            //     channel.send(response).await?;
-                            // }
-                            let game_message = GameMessage::GameUpdate(game_state.clone());
+                        // let game_channel_read = registry.game_channels.read().await;
+                        // let response = GameMessage::GameUpdate(game_state.clone());
+                        // if let Some(channel) = game_channel_read.get(&game_id) {
+                        //     channel.send(response).await?;
+                        // }
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
 
-                            let wrapper = GameMessageWrapper {
-                                server_id: server_id.clone(),
-                                game_message,
-                            };
+                        let wrapper = GameMessageWrapper {
+                            server_id: server_id.clone(),
+                            game_message,
+                        };
 
-                            registry
-                                .publish_message(game_id.clone(), wrapper, false)
-                                .await;
-                        }
+                        registry
+                            .publish_message(game_id.clone(), wrapper, false)
+                            .await;
                     }
                 }
                 GameMessage::MakeMove { game_id, x, y } => {
@@ -821,7 +816,7 @@ impl GameServer {
                                         loser_idx: *loser,
                                         board: board.clone(),
                                         players: players.clone(),
-                                        single_bet_size: single_bet_size.clone(),
+                                        single_bet_size: *single_bet_size,
                                     };
 
                                     // asyncrhonously save the state in redis
@@ -841,7 +836,7 @@ impl GameServer {
                                         &pool,
                                         &user_ids,
                                         *loser,
-                                        single_bet_size.clone(),
+                                        *single_bet_size,
                                         winning_amount,
                                     )
                                     .await?;
