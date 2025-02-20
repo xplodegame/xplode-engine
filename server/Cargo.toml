@@ -22,3 +22,5 @@ sha3.workspace = true
 anyhow.workspace = true
 sqlx.workspace = true
 common = {path = "../common" }
+tracing.workspace = true
+dotenv.workspace = true
