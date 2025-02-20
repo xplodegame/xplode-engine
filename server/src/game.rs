@@ -37,6 +37,7 @@ pub enum GameState {
         board: Board,
         turn_idx: usize,
         single_bet_size: f64,
+        locks: Option<Vec<(usize, usize)>>,
     },
     FINISHED {
         game_id: String,
@@ -68,6 +69,14 @@ pub enum GameMessage {
         game_id: String,
         x: usize,
         y: usize,
+    },
+    Lock {
+        x: usize,
+        y: usize,
+        game_id: String,
+    },
+    LockComplete {
+        game_id: String,
     },
     Stop {
         game_id: String,
@@ -156,7 +165,7 @@ impl GameRegistry {
         println!("Loading game");
         let mut game_states = self.games.write().await;
 
-        if let Some(_) = game_states.get(game_id) {
+        if game_states.get(game_id).is_some() {
             println!("Here already game present");
             return;
         }
@@ -173,9 +182,6 @@ impl GameRegistry {
         if let Some(state_json) = redis_value {
             if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
                 game_states.insert(game_id.to_string(), game_state.clone());
-
-                println!("Value inserted");
-                return;
             }
         }
     }
@@ -302,8 +308,6 @@ impl GameServer {
         let listener = TcpListener::bind(addr).await?;
         println!("Server listening on {}", addr);
 
-        // let (tx, _rx) = broadcast::channel::<Message>(100);
-
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
             let registry = self.registry.clone();
             let server_id = self.server_id.clone();
@@ -369,19 +373,6 @@ impl GameServer {
                 }
             }
         });
-
-        // let ws_write_clone = ws_write.clone();
-        // let writers_task = tokio::spawn(async move {
-        //     while let Ok(msg) = broadcast_rx.recv().await {
-        //         let mut sink = ws_write_clone.lock().await;
-        //         if sink.send(msg.into()).await.is_err() {
-        //             // FIXME: Player id to print
-        //             eprintln!("Player disconnected");
-        //             break;
-        //         }
-        //     }
-        // });
-
         // Process game messages
         while let Some(message) = server_rx.recv().await {
             match message {
@@ -492,6 +483,7 @@ impl GameServer {
                                 board: board.clone(),
                                 turn_idx: 0,
                                 single_bet_size,
+                                locks: None,
                             }
                         };
 
@@ -511,25 +503,10 @@ impl GameServer {
                                 ws_write.clone(),
                             )
                             .await;
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-
                         let mut game_channels_write = registry.game_channels.write().await;
                         game_channels_write.insert(game_id.clone(), server_tx.clone());
                         drop(game_channels_write);
 
-                        // // Get the channel for this game
-                        // println!("Getting the channel for this game????");
-                        // let game_channels_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channels_read.get(&game_id) {
-                        //     println!("Sending a message to all the players");
-                        //     // Broadcast game state to all players
-                        //     let response = GameMessage::GameUpdate(new_game_state.clone());
-                        //     channel.send(response).await?;
-                        // }
                         let game_message = GameMessage::GameUpdate(new_game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -576,36 +553,6 @@ impl GameServer {
                                 ws_write.clone(),
                             )
                             .await;
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-                        // registry.subscribe_to_channel(server_id, game_id, ws_write.clone());
-
-                        // let wrapper = GameMessageWrapper {
-                        //     server_id,
-                        //     game_message: response,
-                        // };
-
-                        // registry
-                        //     .publish_message(game_id.clone(), wrapper, false)
-                        //     .await;
-
-                        // // FIXME: Better solution required
-                        // let response = GameMessage::GameUpdate(game_state);
-                        // let game_channel_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channel_read.get(&game_id) {
-                        //     channel.send(response.clone()).await?;
-                        // }
-                        // if let Err(e) = ws_write
-                        //     .lock()
-                        //     .await
-                        //     .send(Message::binary(serde_json::to_vec(&response)?))
-                        //     .await
-                        // {
-                        //     eprintln!("Error sending GameUpdate message: {}", e);
-                        // }
                         let game_message = GameMessage::GameUpdate(game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -642,17 +589,18 @@ impl GameServer {
                                 game_id: game_id.clone(),
                                 creator: creator.clone(),
                                 board: board.clone(),
-                                single_bet_size: single_bet_size,
-                                min_players: min_players,
+                                single_bet_size,
+                                min_players,
                                 players,
                             }
                         } else {
                             GameState::RUNNING {
                                 game_id: game_id.clone(),
-                                players: players,
+                                players,
                                 board: board.clone(),
                                 turn_idx: 0,
-                                single_bet_size: single_bet_size,
+                                single_bet_size,
+                                locks: None,
                             }
                         };
                         let mut games_write = registry.games.write().await;
@@ -672,28 +620,6 @@ impl GameServer {
                             )
                             .await;
 
-                        // let wrapper = GameMessageWrapper {
-                        //     server_id,
-                        //     game_message: GameMessage::GameUpdate(new_game_state.clone()),
-                        // };
-
-                        // registry
-                        //     .publish_message(game_id.clone(), wrapper, false)
-                        //     .await;
-
-                        // let mut player_streams_write = registry.player_streams.write().await;
-                        // player_streams_write
-                        //     .entry(game_id.clone())
-                        //     .or_insert_with(Vec::new)
-                        //     .push(ws_write.clone());
-
-                        // // Get the channel for this game
-                        // let game_channels_read = registry.game_channels.read().await;
-                        // if let Some(channel) = game_channels_read.get(&game_id) {
-                        //     // Broadcast game state to all players
-                        //     let response = GameMessage::GameUpdate(new_game_state.clone());
-                        //     channel.send(response).await?;
-                        // }
                         let game_message = GameMessage::GameUpdate(new_game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -737,7 +663,7 @@ impl GameServer {
                                     loser_idx: (*turn_idx + 1) % 2,
                                     board: board.clone(),
                                     players: players.clone(),
-                                    single_bet_size: single_bet_size.clone(),
+                                    single_bet_size: *single_bet_size,
                                 };
 
                                 // asyncrhonously save the state in redis
@@ -763,28 +689,26 @@ impl GameServer {
                                     .await;
                             }
                         }
-                    } else {
-                        if let Some(game_state) = games_write.get_mut(&game_id) {
-                            *game_state = GameState::ABORTED {
-                                game_id: game_id.clone(),
-                            };
+                    } else if let Some(game_state) = games_write.get_mut(&game_id) {
+                        *game_state = GameState::ABORTED {
+                            game_id: game_id.clone(),
+                        };
 
-                            // let game_channel_read = registry.game_channels.read().await;
-                            // let response = GameMessage::GameUpdate(game_state.clone());
-                            // if let Some(channel) = game_channel_read.get(&game_id) {
-                            //     channel.send(response).await?;
-                            // }
-                            let game_message = GameMessage::GameUpdate(game_state.clone());
+                        // let game_channel_read = registry.game_channels.read().await;
+                        // let response = GameMessage::GameUpdate(game_state.clone());
+                        // if let Some(channel) = game_channel_read.get(&game_id) {
+                        //     channel.send(response).await?;
+                        // }
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
 
-                            let wrapper = GameMessageWrapper {
-                                server_id: server_id.clone(),
-                                game_message,
-                            };
+                        let wrapper = GameMessageWrapper {
+                            server_id: server_id.clone(),
+                            game_message,
+                        };
 
-                            registry
-                                .publish_message(game_id.clone(), wrapper, false)
-                                .await;
-                        }
+                        registry
+                            .publish_message(game_id.clone(), wrapper, false)
+                            .await;
                     }
                 }
                 GameMessage::MakeMove { game_id, x, y } => {
@@ -798,9 +722,9 @@ impl GameServer {
                                 board,
                                 turn_idx,
                                 single_bet_size,
+                                locks,
                                 ..
                             } => {
-                                println!("Inside running state");
                                 // TODO add backend logic to check turn
                                 if board.mine(x, y) {
                                     // If mine is hit, determine winner
@@ -810,7 +734,7 @@ impl GameServer {
                                         loser_idx: *loser,
                                         board: board.clone(),
                                         players: players.clone(),
-                                        single_bet_size: single_bet_size.clone(),
+                                        single_bet_size: *single_bet_size,
                                     };
 
                                     // asyncrhonously save the state in redis
@@ -818,6 +742,7 @@ impl GameServer {
                                         .save_game_state(game_id.clone(), new_game_state.clone())
                                         .await;
 
+                                    // UPDATING THE DB AS WELL HERE
                                     let winning_amount =
                                         *single_bet_size / ((players.clone().len() - 1) as f64);
 
@@ -829,14 +754,15 @@ impl GameServer {
                                         &pool,
                                         &user_ids,
                                         *loser,
-                                        single_bet_size.clone(),
+                                        *single_bet_size,
                                         winning_amount,
                                     )
                                     .await?;
                                     *game_state = new_game_state;
                                 } else {
                                     // Switch turns
-                                    *turn_idx = (*turn_idx + 1) % players.len();
+                                    // *turn_idx = (*turn_idx + 1) % players.len();
+                                    *locks = None;
                                     // asyncrhonously save the state in redis
                                     registry
                                         .save_game_state(game_id.clone(), game_state.clone())
@@ -877,7 +803,61 @@ impl GameServer {
                         }
                     }
                 }
+                GameMessage::Lock { x, y, game_id } => {
+                    let mut games_write = registry.games.write().await;
+
+                    if let Some(game_state) = games_write.get_mut(&game_id) {
+                        if let GameState::RUNNING { game_id, locks, .. } = game_state {
+                            let locks = locks.get_or_insert_with(Vec::new);
+                            locks.push((x, y));
+                            registry
+                                .save_game_state(game_id.clone(), game_state.clone())
+                                .await;
+                        }
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
+
+                        let wrapper = GameMessageWrapper {
+                            server_id: server_id.clone(),
+                            game_message,
+                        };
+
+                        registry
+                            .publish_message(game_id.clone(), wrapper.clone(), false)
+                            .await;
+                    }
+                }
+                GameMessage::LockComplete { game_id } => {
+                    let mut games_write = registry.games.write().await;
+
+                    if let Some(game_state) = games_write.get_mut(&game_id) {
+                        if let GameState::RUNNING {
+                            game_id,
+                            turn_idx,
+                            players,
+                            ..
+                        } = game_state
+                        {
+                            *turn_idx = (*turn_idx + 1) % players.len();
+
+                            // asyncrhonously save the state in redis
+                            registry
+                                .save_game_state(game_id.clone(), game_state.clone())
+                                .await;
+                        }
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
+
+                        let wrapper = GameMessageWrapper {
+                            server_id: server_id.clone(),
+                            game_message,
+                        };
+
+                        registry
+                            .publish_message(game_id.clone(), wrapper.clone(), false)
+                            .await;
+                    }
+                }
                 GameMessage::GameUpdate(msg) => {
+                    // unreachable!("Should fail if execution enters here");
                     let game_message = GameMessage::GameUpdate(msg.clone());
 
                     let wrapper = GameMessageWrapper {
