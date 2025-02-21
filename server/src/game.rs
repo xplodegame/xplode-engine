@@ -682,6 +682,7 @@ impl GameServer {
                 }
                 GameMessage::Stop { game_id, abort } => {
                     registry.load_game_if_absent(&game_id).await;
+
                     let mut games_write = registry.games.write().await;
                     if !abort {
                         // Meaning other players won
@@ -694,25 +695,45 @@ impl GameServer {
                                 ..
                             } = game_state
                             {
-                                *game_state = GameState::FINISHED {
+                                println!("Hello about to stop the game**************************************");
+                                let loser = turn_idx;
+                                let new_game_state = GameState::FINISHED {
                                     game_id: game_id.clone(),
-                                    loser_idx: (*turn_idx + 1) % 2,
+                                    loser_idx: *loser,
                                     board: board.clone(),
                                     players: players.clone(),
                                     single_bet_size: *single_bet_size,
                                 };
 
+                                // remove players from active state
+                                let mut active_players_write =
+                                    registry.active_players.write().await;
+
+                                let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+
+                                active_players_write.retain(|x| !ids.contains(x));
                                 // asyncrhonously save the state in redis
                                 registry
-                                    .save_game_state(game_id.clone(), game_state.clone())
+                                    .save_game_state(game_id.clone(), new_game_state.clone())
                                     .await;
 
-                                // // Get the channel to broadcast game state
-                                // let game_channels_read = registry.game_channels.read().await;
-                                // if let Some(channel) = game_channels_read.get(&game_id) {
-                                //     let response = GameMessage::GameUpdate(game_state.clone());
-                                //     channel.send(response).await?;
-                                // }
+                                // UPDATING THE DB AS WELL HERE
+                                let winning_amount =
+                                    *single_bet_size / ((players.clone().len() - 1) as f64);
+
+                                let user_ids: Vec<u32> = players
+                                    .iter()
+                                    .map(|p| p.id.parse::<u32>().unwrap())
+                                    .collect();
+                                db::update_player_balances(
+                                    &pool,
+                                    &user_ids,
+                                    *loser,
+                                    *single_bet_size,
+                                    winning_amount,
+                                )
+                                .await?;
+                                *game_state = new_game_state;
                                 let game_message = GameMessage::GameUpdate(game_state.clone());
 
                                 let wrapper = GameMessageWrapper {
@@ -726,15 +747,17 @@ impl GameServer {
                             }
                         }
                     } else if let Some(game_state) = games_write.get_mut(&game_id) {
+                        if let GameState::RUNNING { players, .. } = game_state {
+                            // remove players from active state
+                            let mut active_players_write = registry.active_players.write().await;
+
+                            let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+
+                            active_players_write.retain(|x| !ids.contains(x));
+                        }
                         *game_state = GameState::ABORTED {
                             game_id: game_id.clone(),
                         };
-
-                        // let game_channel_read = registry.game_channels.read().await;
-                        // let response = GameMessage::GameUpdate(game_state.clone());
-                        // if let Some(channel) = game_channel_read.get(&game_id) {
-                        //     channel.send(response).await?;
-                        // }
                         let game_message = GameMessage::GameUpdate(game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -773,6 +796,14 @@ impl GameServer {
                                         single_bet_size: *single_bet_size,
                                     };
 
+                                    // remove players from active state
+                                    let mut active_players_write =
+                                        registry.active_players.write().await;
+
+                                    let ids =
+                                        players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+
+                                    active_players_write.retain(|x| !ids.contains(x));
                                     // asyncrhonously save the state in redis
                                     registry
                                         .save_game_state(game_id.clone(), new_game_state.clone())
@@ -859,7 +890,7 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper.clone(), false)
-                            .await;
+                            .await?;
                     }
                 }
                 GameMessage::LockComplete { game_id } => {
@@ -889,7 +920,7 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper.clone(), false)
-                            .await;
+                            .await?;
                     }
                 }
                 GameMessage::GameUpdate(msg) => {
@@ -905,7 +936,7 @@ impl GameServer {
                         GameState::RUNNING { game_id, .. } => {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
-                                .await;
+                                .await?;
                         }
                         GameState::FINISHED {
                             game_id,
@@ -916,7 +947,7 @@ impl GameServer {
                         } => {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
-                                .await;
+                                .await?;
                             // Update the db
                             let winning_amount = single_bet_size / ((players.len() - 1) as f64);
 
@@ -936,12 +967,12 @@ impl GameServer {
                         GameState::ABORTED { game_id } => {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
-                                .await;
+                                .await?;
                         }
                         GameState::WAITING { game_id, .. } => {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
-                                .await;
+                                .await?;
                         }
                     }
                 }
