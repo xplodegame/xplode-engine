@@ -1,3 +1,4 @@
+use anyhow::Result;
 use common::db::{self, establish_connection};
 use futures_util::{
     lock::Mutex,
@@ -7,7 +8,11 @@ use futures_util::{
 
 use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    sync::Arc,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
@@ -84,6 +89,7 @@ pub enum GameMessage {
     },
     Ping {
         game_id: Option<String>,
+        player_id: Option<String>,
     },
     GameUpdate(GameState),
     Error(String),
@@ -97,6 +103,7 @@ pub struct GameMessageWrapper {
 #[derive(Clone)]
 pub struct GameRegistry {
     games: Arc<RwLock<HashMap<String, GameState>>>,
+    active_players: Arc<RwLock<HashSet<String>>>,
     // Fixme: Take care of this Arc
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
@@ -112,9 +119,13 @@ impl GameRegistry {
     pub async fn save_game_state(&self, game_id: String, state: GameState) {
         // Sync to Redis (async write to avoid blocking)
         let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
-        conn.set_ex::<String, String, ()>(game_id, serde_json::to_string(&state).unwrap(), 300)
-            .await
-            .expect("Faield to update game state");
+        conn.set_ex::<String, String, ()>(
+            game_id.clone(),
+            serde_json::to_string(&state).unwrap(),
+            300,
+        )
+        .await
+        .expect("Faield to update game state");
     }
 
     pub async fn load_game_state(&self) {
@@ -191,7 +202,7 @@ impl GameRegistry {
         server_id: String,
         channel: String,
         ws_write: Arc<Mutex<WebSocketSink>>,
-    ) {
+    ) -> Result<()> {
         println!("SUbscribed to channel: {:?}", channel);
         // Channel name should only rely on game_id
         let mut broadcast_channels = self.broadcast_channels.write().await;
@@ -226,11 +237,12 @@ impl GameRegistry {
                                 // Re-publish to Redis for redundancy
                                 registry_clone
                                     .publish_message(channel.clone(), game_message_wrapper, true)
-                                    .await;
+                                    .await?;
                             }
                         }
                     }
                 }
+                anyhow::Ok(())
             });
         }
         println!("################Broadcasting now\n");
@@ -254,6 +266,7 @@ impl GameRegistry {
                 }
             }
         });
+        Ok(())
     }
 
     // ✅ Publish messages using multiplexed connection
@@ -262,7 +275,7 @@ impl GameRegistry {
         channel: String, // channel == game_id
         game_message_wrapper: GameMessageWrapper,
         from_redis: bool,
-    ) {
+    ) -> Result<()> {
         println!("***********publishing message***********");
         // Send to local clients
         if let Some(channel) = self.broadcast_channels.read().await.get(&channel) {
@@ -272,13 +285,13 @@ impl GameRegistry {
         // Publish to Redis only if not from Redis
         if !from_redis {
             let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
-            let _ = conn
-                .publish::<String, String, ()>(
-                    channel,
-                    serde_json::to_string(&game_message_wrapper).unwrap(),
-                )
-                .await;
+            conn.publish::<String, String, ()>(
+                channel,
+                serde_json::to_string(&game_message_wrapper).unwrap(),
+            )
+            .await?;
         }
+        Ok(())
     }
 }
 
@@ -296,6 +309,7 @@ impl GameServer {
             server_id: Uuid::new_v4().to_string(),
             registry: GameRegistry {
                 games: Arc::new(RwLock::new(HashMap::new())),
+                active_players: Arc::new(RwLock::new(HashSet::new())),
                 game_channels: Arc::new(RwLock::new(HashMap::new())),
                 broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
                 // player_streams: Arc::new(RwLock::new(HashMap::new())),
@@ -376,13 +390,17 @@ impl GameServer {
         // Process game messages
         while let Some(message) = server_rx.recv().await {
             match message {
-                GameMessage::Ping { game_id } => {
+                GameMessage::Ping { game_id, player_id } => {
                     if let Some(game_id) = game_id {
                         registry
                             .subscribe_to_channel(server_id.clone(), game_id, ws_write.clone())
-                            .await;
+                            .await?;
                     }
 
+                    if let Some(player_id) = player_id {
+                        let mut active_players_write = registry.active_players.write().await;
+                        active_players_write.insert(player_id);
+                    }
                     let response = "Pong".to_string();
                     if let Err(e) = ws_write
                         .lock()
@@ -401,6 +419,19 @@ impl GameServer {
                     grid,
                 } => {
                     println!("Play request");
+                    let active_players_read = registry.active_players.read().await;
+
+                    if active_players_read.contains(&player_id) {
+                        let response =
+                            GameMessage::Error("You are already waiting for a game".to_string());
+                        ws_write
+                            .lock()
+                            .await
+                            .send(Message::binary(serde_json::to_vec(&response)?))
+                            .await?;
+                        continue;
+                    }
+                    drop(active_players_read);
                     let games_read = registry.games.read().await;
 
                     //TODO: Think of a better way to do this
@@ -464,7 +495,7 @@ impl GameServer {
                     {
                         // Now we can safely create a new player and prepare the new game state
                         println!("Game has begun");
-                        let player = Player::new(player_id);
+                        let player = Player::new(player_id.clone());
                         players.push(player);
 
                         let new_game_state = if players.len() < min_players as usize {
@@ -502,7 +533,7 @@ impl GameServer {
                                 game_id.clone(),
                                 ws_write.clone(),
                             )
-                            .await;
+                            .await?;
                         let mut game_channels_write = registry.game_channels.write().await;
                         game_channels_write.insert(game_id.clone(), server_tx.clone());
                         drop(game_channels_write);
@@ -516,12 +547,14 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper, false)
-                            .await;
+                            .await?;
+                        let mut active_players_write = registry.active_players.write().await;
+                        active_players_write.insert(player_id);
                     } else {
                         println!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
                         let board = Board::new(grid as usize, bombs as usize);
-                        let player = Player::new(player_id);
+                        let player = Player::new(player_id.clone());
 
                         let game_state = GameState::WAITING {
                             game_id: game_id.clone(),
@@ -552,7 +585,7 @@ impl GameServer {
                                 game_id.clone(),
                                 ws_write.clone(),
                             )
-                            .await;
+                            .await?;
                         let game_message = GameMessage::GameUpdate(game_state.clone());
 
                         let wrapper = GameMessageWrapper {
@@ -562,7 +595,9 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper, false)
-                            .await;
+                            .await?;
+                        let mut active_players_write = registry.active_players.write().await;
+                        active_players_write.insert(player_id);
                     }
                 }
                 GameMessage::Join { game_id, player_id } => {
@@ -580,7 +615,7 @@ impl GameServer {
                         players,
                     }) = game_state
                     {
-                        let new_player = Player::new(player_id);
+                        let new_player = Player::new(player_id.clone());
                         let mut players = players.clone();
                         players.push(new_player);
 
@@ -618,7 +653,7 @@ impl GameServer {
                                 game_id.clone(),
                                 ws_write.clone(),
                             )
-                            .await;
+                            .await?;
 
                         let game_message = GameMessage::GameUpdate(new_game_state.clone());
 
@@ -629,12 +664,13 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper, false)
-                            .await;
+                            .await?;
+                        let mut active_players_write = registry.active_players.write().await;
+                        active_players_write.insert(player_id);
                     } else {
                         let response =
                             GameMessage::Error("this game is not accepting players".to_string());
                         if let Err(err) = ws_write
-                            .clone()
                             .lock()
                             .await
                             .send(Message::binary(serde_json::to_vec(&response)?))
@@ -686,7 +722,7 @@ impl GameServer {
 
                                 registry
                                     .publish_message(game_id.clone(), wrapper, false)
-                                    .await;
+                                    .await?;
                             }
                         }
                     } else if let Some(game_state) = games_write.get_mut(&game_id) {
@@ -708,7 +744,7 @@ impl GameServer {
 
                         registry
                             .publish_message(game_id.clone(), wrapper, false)
-                            .await;
+                            .await?;
                     }
                 }
                 GameMessage::MakeMove { game_id, x, y } => {
@@ -778,7 +814,7 @@ impl GameServer {
 
                                 registry
                                     .publish_message(game_id.clone(), wrapper, false)
-                                    .await;
+                                    .await?;
 
                                 // // Get the channel to broadcast game state
                                 // let game_channels_read = registry.game_channels.read().await;
