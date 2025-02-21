@@ -263,14 +263,14 @@ async fn withdraw(
         "Withdrawal of {} successful. New balance: {}",
         withdraw_req.amount, new_balance
     );
-    return HttpResponse::Ok().json(json!(
+    HttpResponse::Ok().json(json!(
         {
             "user_id": withdraw_req.user_id,
             "currency": withdraw_req.currency,
             "balance": new_balance,
             "tx_hash": withdraw_txhash.clone(),
         }
-    ));
+    ))
 }
 
 struct AppState {
