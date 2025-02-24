@@ -721,9 +721,9 @@ impl GameServer {
                                 let winning_amount =
                                     *single_bet_size / ((players.clone().len() - 1) as f64);
 
-                                let user_ids: Vec<u32> = players
+                                let user_ids: Vec<i32> = players
                                     .iter()
-                                    .map(|p| p.id.parse::<u32>().unwrap())
+                                    .map(|p| p.id.parse::<i32>().unwrap())
                                     .collect();
                                 db::update_player_balances(
                                     &pool,
@@ -813,9 +813,9 @@ impl GameServer {
                                     let winning_amount =
                                         *single_bet_size / ((players.clone().len() - 1) as f64);
 
-                                    let user_ids: Vec<u32> = players
+                                    let user_ids: Vec<i32> = players
                                         .iter()
-                                        .map(|p| p.id.parse::<u32>().unwrap())
+                                        .map(|p| p.id.parse::<i32>().unwrap())
                                         .collect();
                                     db::update_player_balances(
                                         &pool,
@@ -951,9 +951,9 @@ impl GameServer {
                             // Update the db
                             let winning_amount = single_bet_size / ((players.len() - 1) as f64);
 
-                            let user_ids: Vec<u32> = players
+                            let user_ids: Vec<i32> = players
                                 .iter()
-                                .map(|p| p.id.parse::<u32>().unwrap())
+                                .map(|p| p.id.parse::<i32>().unwrap())
                                 .collect();
                             db::update_player_balances(
                                 &pool,

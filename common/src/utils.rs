@@ -24,7 +24,7 @@ pub struct UserDetailsRequest {
 
 #[derive(Deserialize)]
 pub struct DepositRequest {
-    pub user_id: u32,
+    pub user_id: i32,
     pub amount: f64,
     pub currency: Currency,
     pub tx_type: TxType,
@@ -33,7 +33,7 @@ pub struct DepositRequest {
 
 #[derive(Deserialize)]
 pub struct WithdrawRequest {
-    pub user_id: u32,
+    pub user_id: i32,
     pub amount: f64,
     pub currency: Currency,
     pub withdraw_address: String,
