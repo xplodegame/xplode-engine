@@ -14,7 +14,7 @@ use models::{User, Wallet};
 
 use serde_json::json;
 use solana_sdk::pubkey::Pubkey;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Postgres};
 use utils::TxType;
 
 const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
@@ -35,7 +35,7 @@ async fn fetch_or_create_user(
         .expect("failed to get connection from the pool");
 
     // Check if the user already exists
-    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE email = $1")
         .bind(&req.email)
         .fetch_optional(&mut conn)
         .await
@@ -44,7 +44,7 @@ async fn fetch_or_create_user(
     match existing_user {
         Some(user) => {
             let wallet: Wallet =
-                sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
+                sqlx::query_as("SELECT * FROM wallet where user_id = $1 and currency = $2")
                     .bind(user.id)
                     .bind(Currency::SOL.to_string())
                     .fetch_one(&mut conn)
@@ -68,17 +68,19 @@ async fn fetch_or_create_user(
                 .expect("Failed to create deposit address");
 
             // User does not exist, create a new user
-            sqlx::query("INSERT INTO users (clerk_id, email, name, user_pda) VALUES (?, ?, ?, ?)")
-                .bind(&req.clerk_id)
-                .bind(&req.email)
-                .bind(&req.name)
-                .bind(user_pda.to_string())
-                .execute(&mut conn)
-                .await
-                .expect("Error creating new user");
+            sqlx::query(
+                "INSERT INTO users (clerk_id, email, name, user_pda) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&req.clerk_id)
+            .bind(&req.email)
+            .bind(&req.name)
+            .bind(user_pda.to_string())
+            .execute(&mut conn)
+            .await
+            .expect("Error creating new user");
 
             // Fetch the newly created user to return their details
-            let created_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+            let created_user: User = sqlx::query_as("SELECT * FROM users WHERE email = $1")
                 .bind(&req.email)
                 .fetch_one(&mut conn)
                 .await
@@ -103,14 +105,14 @@ async fn get_user_pnl(
     user_id: web::Path<String>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let user_id: u32 = user_id.into_inner().parse().unwrap();
+    let user_id: i32 = user_id.into_inner().parse().unwrap();
     let AppState {
         pool,
         deposit_service: _,
     } = &**app_state;
 
     let mut conn = pool.acquire().await.unwrap();
-    let user_pnl: Pnl = sqlx::query_as("SELECT * FROM pnl where user_id = ?")
+    let user_pnl: Pnl = sqlx::query_as("SELECT * FROM pnl where user_id = $1")
         .bind(user_id)
         .fetch_one(&mut conn)
         .await
@@ -155,18 +157,19 @@ async fn deposit(
         .await
         .expect("Failed to get a connection from the pool");
 
-    let wallet: Wallet = sqlx::query_as("SELECT * FROM wallet where user_id = ? and currency = ?")
-        .bind(deposit_request.user_id)
-        .bind(deposit_request.currency.to_string())
-        .fetch_one(&mut conn)
-        .await
-        .expect("Error fetching wallet");
+    let wallet: Wallet =
+        sqlx::query_as("SELECT * FROM wallet where user_id = $1 and currency = $2")
+            .bind(deposit_request.user_id)
+            .bind(deposit_request.currency.to_string())
+            .fetch_one(&mut conn)
+            .await
+            .expect("Error fetching wallet");
 
     println!("Wallet: {:?}", wallet);
 
     let new_balance = deposit_request.amount + wallet.balance;
 
-    sqlx::query("update wallet set balance = ? where user_id = ? and currency = ?")
+    sqlx::query("update wallet set balance = $1 where user_id = $2 and currency = $3")
         .bind(new_balance)
         .bind(deposit_request.user_id)
         .bind(deposit_request.currency.to_string())
@@ -176,7 +179,7 @@ async fn deposit(
 
     // // Record the transaction
     sqlx::query(
-        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(deposit_request.user_id)
     .bind(deposit_request.amount)
@@ -212,7 +215,7 @@ async fn withdraw(
 
     // Fetch the user's current wallet balance
     let current_balance: (f64,) =
-        sqlx::query_as("SELECT balance FROM wallet WHERE user_id = ? and currency = ?")
+        sqlx::query_as("SELECT balance FROM wallet WHERE user_id = $1 and currency = $2")
             .bind(withdraw_req.user_id)
             .bind(withdraw_req.currency.to_string())
             .fetch_one(&mut conn)
@@ -238,7 +241,7 @@ async fn withdraw(
     let new_balance = current_balance.0 - withdraw_req.amount;
 
     // Update the user's wallet balance
-    sqlx::query("UPDATE wallet SET balance = ? WHERE user_id = ? and currency = ?")
+    sqlx::query("UPDATE wallet SET balance = $1 WHERE user_id = $2 and currency = $3")
         .bind(new_balance)
         .bind(withdraw_req.user_id)
         .bind(withdraw_req.currency.to_string())
@@ -248,7 +251,7 @@ async fn withdraw(
 
     // Record the transaction
     sqlx::query(
-        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(withdraw_req.user_id)
     .bind(withdraw_req.amount)
@@ -274,7 +277,7 @@ async fn withdraw(
 }
 
 struct AppState {
-    pool: Pool<Sqlite>,
+    pool: Pool<Postgres>,
     deposit_service: DepositService,
 }
 #[actix_web::main]

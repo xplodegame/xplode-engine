@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let mut conn = pool.await.acquire().await.expect("DB conn failed");
 
     loop {
+        println!("Hello");
         let users: Vec<User> = sqlx::query_as("SELECT * FROM users")
             .fetch_all(&mut conn)
             .await

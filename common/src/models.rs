@@ -1,43 +1,44 @@
+use chrono;
 use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Deserialize, Serialize, sqlx::FromRow)]
 pub struct User {
-    pub id: u32,            // Assuming id is INTEGER
-    pub clerk_id: String,   // TEXT, optional
-    pub email: String,      // TEXT
-    pub name: String,       // TEXT
-    pub user_pda: String,   //TEXT
-    pub created_at: String, // TIMESTAMP, optional
-    pub updated_at: String, // TIMESTAMP, optional
+    pub id: i32,                                   // Assuming id is INTEGER
+    pub clerk_id: String,                          // TEXT, optional
+    pub email: String,                             // TEXT
+    pub name: String,                              // TEXT
+    pub user_pda: String,                          //TEXT
+    pub created_at: chrono::DateTime<chrono::Utc>, // Use proper timestamp type
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
 pub struct Wallet {
-    pub id: u32,            // Assuming id is INTEGER
-    pub user_id: u32,       // Foreign key to User
-    pub currency: String,   // Currency type
-    pub balance: f64,       // Balance as a decimal
-    pub created_at: String, // TIMESTAMP, optional
-    pub updated_at: String, // TIMESTAMP, optional
+    pub id: i32,
+    pub user_id: i32,
+    pub currency: String,
+    pub balance: f64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct Transaction {
-    pub id: u32,         // Assuming id is INTEGER
-    pub user_id: u32,    // Foreign key to User
-    pub amount: f64,     // Amount as a decimal
-    pub tx_type: String, // TEXT
+    pub id: i32,
+    pub user_id: i32,
+    pub amount: f64,
+    pub tx_type: String,
     pub tx_hash: String,
-    pub created_at: Option<String>, // TIMESTAMP, optional
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Deserialize, Serialize, sqlx::FromRow)]
 pub struct Pnl {
-    pub id: u32,
-    pub user_id: u32,
-    pub num_matches: u32,
+    pub id: i32,
+    pub user_id: i32,
+    pub num_matches: i32,
     pub profit: f64,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
