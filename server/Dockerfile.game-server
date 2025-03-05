@@ -1,0 +1,30 @@
+FROM rust:latest as builder
+
+WORKDIR /app
+
+# Copy the entire project
+COPY . .
+
+# Build the server application in release mode
+RUN cargo build --release --bin server
+
+# Create a smaller runtime image
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built binary from the builder stage
+COPY --from=builder /app/target/release/server /app/server
+
+# Expose the port the server runs on
+EXPOSE 3000
+
+# Set the command to run the server
+CMD ["/app/server"]
+

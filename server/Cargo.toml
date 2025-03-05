@@ -23,4 +23,5 @@ anyhow.workspace = true
 sqlx.workspace = true
 common = {path = "../common" }
 tracing.workspace = true
+tracing-subscriber.workspace = true
 dotenv.workspace = true
