@@ -37,7 +37,7 @@ async fn user_details(
     req: web::Json<UserDetailsRequest>,
     pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
 ) -> impl Responder {
-    println!("Got a request");
+    info!("Got a request");
     let mut conn = pool
         .acquire()
         .await
@@ -86,7 +86,7 @@ async fn deposit(
     client: web::Data<RazorpayClient>,
     pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
 ) -> impl Responder {
-    println!("Deposit request arrived");
+    info!("Deposit request arrived");
 
     let mut conn = pool
         .acquire()
@@ -135,7 +135,7 @@ async fn verify_payment(
     req: web::Json<VerifyPaymentRequest>,
     client: web::Data<RazorpayClient>,
 ) -> impl Responder {
-    println!("Verification payment request arrived");
+    info!("Verification payment request arrived");
     match client
         .verify_payment(
             &req.razorpay_payment_id,
@@ -145,12 +145,12 @@ async fn verify_payment(
         .await
     {
         Ok(true) => {
-            println!("Verification succcess");
+            info!("Verification succcess");
             HttpResponse::Ok().finish()
         }
         Ok(false) => HttpResponse::Unauthorized().finish(),
         Err(err) => {
-            println!("error encounter: {:?}", err);
+            info!("error encounter: {:?}", err);
             HttpResponse::InternalServerError().finish()
         }
     }
@@ -161,7 +161,7 @@ async fn withdraw(
     req: web::Json<WithdrawRequest>,
     pool: web::Data<sqlx::Pool<sqlx::Sqlite>>,
 ) -> impl Responder {
-    println!("Received withdraw request");
+    info!("Received withdraw request");
     let mut conn = pool
         .acquire()
         .await
@@ -198,7 +198,7 @@ async fn withdraw(
         .await
         .expect("Error recording transaction");
 
-    println!(
+    info!(
         "Withdrawal of {} successful. New balance: {}",
         req.amount, new_balance
     );

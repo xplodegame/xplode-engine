@@ -1,15 +1,20 @@
-use std::{str::FromStr, time::Duration};
+use std::{env, str::FromStr, time::Duration};
 
 use common::{db::establish_connection, models::User};
 use deposits::DepositService;
-use dotenv::dotenv;
 use solana_sdk::pubkey::Pubkey;
 use tokio::time::sleep;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenv().ok();
-    println!("Starting the deposit background service");
+    // let env = env::var("APP_ENV").unwrap_or_else(|_| "dev".to_string());
+    // let env_file = format!(".env.{}", env);
+    // dotenv::from_filename(env_file)
+    //     .ok()
+    //     .expect("Failed to load .env file");
+    tracing_subscriber::fmt::init();
+    info!("Starting the deposit background service");
     let program_id = Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap();
 
     let cwd = std::env::current_dir().unwrap();
@@ -19,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let mut conn = pool.await.acquire().await.expect("DB conn failed");
 
     loop {
-        println!("Hello");
+        info!("Hello");
         let users: Vec<User> = sqlx::query_as("SELECT * FROM users")
             .fetch_all(&mut conn)
             .await

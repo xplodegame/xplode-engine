@@ -21,6 +21,7 @@ use tokio::{
     },
 };
 use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
+use tracing::info;
 
 use uuid::Uuid;
 
@@ -132,7 +133,7 @@ impl GameRegistry {
         let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
 
         let keys: Vec<String> = conn.keys("*").await.unwrap();
-        println!(
+        info!(
             "***************************Keys length: {}************************************",
             keys.len()
         );
@@ -173,11 +174,11 @@ impl GameRegistry {
 
     // Load Game State from Redis if Not in Memory
     pub async fn load_game_if_absent(&self, game_id: &str) {
-        println!("Loading game");
+        info!("Loading game");
         let mut game_states = self.games.write().await;
 
         if game_states.get(game_id).is_some() {
-            println!("Here already game present");
+            info!("Here already game present");
             return;
         }
 
@@ -189,7 +190,7 @@ impl GameRegistry {
             .await
             .ok();
 
-        println!("Redis value for game state: {:?}", redis_value);
+        info!("Redis value for game state: {:?}", redis_value);
         if let Some(state_json) = redis_value {
             if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
                 game_states.insert(game_id.to_string(), game_state.clone());
@@ -203,14 +204,14 @@ impl GameRegistry {
         channel: String,
         ws_write: Arc<Mutex<WebSocketSink>>,
     ) -> Result<()> {
-        println!("SUbscribed to channel: {:?}", channel);
+        info!("SUbscribed to channel: {:?}", channel);
         // Channel name should only rely on game_id
         let mut broadcast_channels = self.broadcast_channels.write().await;
 
         if broadcast_channels.get(&channel).is_none() {
             let (tx, _rx) = broadcast::channel(100);
             broadcast_channels.insert(channel.clone(), tx.clone());
-            println!("Inserting into broadcast channel");
+            info!("Inserting into broadcast channel");
 
             // Spawn a single Redis subscription for this game_id
             let redis_client = self.redis.clone();
@@ -245,17 +246,17 @@ impl GameRegistry {
                 anyhow::Ok(())
             });
         }
-        println!("################Broadcasting now\n");
+        info!("################Broadcasting now\n");
         let broadcast_tx = broadcast_channels.get(&channel).unwrap();
         let mut broadcast_rx = broadcast_tx.subscribe();
 
-        println!(
+        info!(
             "broadcast_tx.receiver_count(): {}",
             broadcast_tx.receiver_count()
         );
         tokio::spawn(async move {
             while let Ok(game_message) = broadcast_rx.recv().await {
-                println!("Got one message");
+                info!("Got broadcast message");
                 let mut ws_sink = ws_write.lock().await;
                 if ws_sink
                     .send(Message::binary(serde_json::to_vec(&game_message).unwrap()))
@@ -276,7 +277,7 @@ impl GameRegistry {
         game_message_wrapper: GameMessageWrapper,
         from_redis: bool,
     ) -> Result<()> {
-        println!("***********publishing message***********");
+        info!("***********publishing message***********");
         // Send to local clients
         if let Some(channel) = self.broadcast_channels.read().await.get(&channel) {
             let _ = channel.send(game_message_wrapper.game_message.clone());
@@ -284,6 +285,7 @@ impl GameRegistry {
 
         // Publish to Redis only if not from Redis
         if !from_redis {
+            info!("Publishing to Redis");
             let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
             conn.publish::<String, String, ()>(
                 channel,
@@ -320,7 +322,7 @@ impl GameServer {
 
     pub async fn start(&self, addr: &str) -> anyhow::Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        println!("Server listening on {}", addr);
+        info!("Server listening on {}", addr);
 
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
             let registry = self.registry.clone();
@@ -328,7 +330,7 @@ impl GameServer {
 
             // let tx = tx.clone();
             tokio::spawn(async move {
-                println!("Establishing connection");
+                info!("Establishing connection");
                 if let Err(e) = GameServer::handle_connection(server_id, registry, stream).await {
                     eprintln!("Error handling connection: {}", e);
                 }
@@ -361,7 +363,7 @@ impl GameServer {
             let server_tx = server_tx.clone();
             async move {
                 while let Some(msg) = ws_read.next().await {
-                    println!("Incoming msg");
+                    info!("Incoming msg");
                     let server_tx_inner = server_tx.clone();
 
                     match msg {
@@ -369,7 +371,7 @@ impl GameServer {
                             tokio::spawn(async move {
                                 match serde_json::from_slice(message.as_payload()) {
                                     Ok(game_msg) => {
-                                        println!("msg: {:?}", game_msg);
+                                        info!("msg: {:?}", game_msg);
                                         if let Err(e) = server_tx_inner.send(game_msg).await {
                                             eprintln!("Error sending message: {}", e);
                                         }
@@ -418,7 +420,7 @@ impl GameServer {
                     bombs,
                     grid,
                 } => {
-                    println!("Play request");
+                    info!("Play request");
                     let active_players_read = registry.active_players.read().await;
 
                     if active_players_read.contains(&player_id) {
@@ -453,7 +455,7 @@ impl GameServer {
                     });
                     drop(games_read);
                     if matched_game.is_none() {
-                        println!("Loading game from memory");
+                        info!("Loading game from memory");
                         // try to match game from redis
 
                         registry.load_game_state().await;
@@ -461,7 +463,7 @@ impl GameServer {
                         // FIXME: Remove redundant checking
                         let games_read = registry.games.read().await;
 
-                        println!("Keys length after: {:?}", games_read.keys().len());
+                        info!("Keys length after: {:?}", games_read.keys().len());
                         matched_game = games_read.iter().find_map(|(game_id, state)| {
                             if let GameState::WAITING {
                                 single_bet_size: size,
@@ -494,7 +496,7 @@ impl GameServer {
                     )) = matched_game
                     {
                         // Now we can safely create a new player and prepare the new game state
-                        println!("Game has begun");
+                        info!("Game has begun");
                         let player = Player::new(player_id.clone());
                         players.push(player);
 
@@ -551,7 +553,7 @@ impl GameServer {
                         let mut active_players_write = registry.active_players.write().await;
                         active_players_write.insert(player_id);
                     } else {
-                        println!("User will create a game");
+                        info!("User will create a game");
                         let game_id = Uuid::new_v4().to_string();
                         let board = Board::new(grid as usize, bombs as usize);
                         let player = Player::new(player_id.clone());
@@ -601,7 +603,7 @@ impl GameServer {
                     }
                 }
                 GameMessage::Join { game_id, player_id } => {
-                    println!("Request to join:: {:?} game", game_id);
+                    info!("Request to join:: {:?} game", game_id);
 
                     // let games_read = registry.games.read().await;
                     // let game_state = games_read.get(&game_id);
@@ -695,7 +697,7 @@ impl GameServer {
                                 ..
                             } = game_state
                             {
-                                println!("Hello about to stop the game**************************************");
+                                info!("Hello about to stop the game**************************************");
                                 let loser = turn_idx;
                                 let new_game_state = GameState::FINISHED {
                                     game_id: game_id.clone(),
@@ -931,7 +933,7 @@ impl GameServer {
                         server_id: server_id.clone(),
                         game_message,
                     };
-                    println!("Inside game update");
+                    info!("Inside game update");
                     match msg {
                         GameState::RUNNING { game_id, .. } => {
                             registry
@@ -985,7 +987,7 @@ impl GameServer {
     }
 }
 
-// println!("Game update here");
+// info!("Game update here");
 
 // if let GameState::FINISHED {
 //     loser_idx,
