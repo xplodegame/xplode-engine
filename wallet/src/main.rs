@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{env, str::FromStr};
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
@@ -15,6 +15,7 @@ use models::{User, Wallet};
 use serde_json::json;
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
+use tracing::info;
 use utils::TxType;
 
 const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
@@ -28,7 +29,7 @@ async fn fetch_or_create_user(
         deposit_service,
     } = &**app_state;
 
-    println!("Got a request");
+    info!("Got a request");
     let mut conn = pool
         .acquire()
         .await
@@ -129,7 +130,7 @@ async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
         pool,
         deposit_service: _,
     } = &**app_state;
-    println!("Leaderboard request arrived");
+    info!("Leaderboard request arrived");
 
     let mut conn = pool.acquire().await.unwrap();
 
@@ -150,7 +151,7 @@ async fn deposit(
         pool,
         deposit_service: _,
     } = &**app_state;
-    println!("Deposit request arrived");
+    info!("Deposit request arrived");
 
     let mut conn = pool
         .acquire()
@@ -164,8 +165,6 @@ async fn deposit(
             .fetch_one(&mut conn)
             .await
             .expect("Error fetching wallet");
-
-    println!("Wallet: {:?}", wallet);
 
     let new_balance = deposit_request.amount + wallet.balance;
 
@@ -202,12 +201,11 @@ async fn withdraw(
     withdraw_req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    println!("Attempting to withdraw");
+    info!("Attempting to withdraw");
     let AppState {
         pool,
         deposit_service,
     } = &**app_state;
-    println!("Received withdraw request");
     let mut conn = pool
         .acquire()
         .await
@@ -235,7 +233,7 @@ async fn withdraw(
         .await
         .unwrap();
 
-    println!("Withdrawn tx hash: {:?}", withdraw_txhash);
+    info!("Withdrawn tx hash: {:?}", withdraw_txhash);
 
     // Deduct the amount from the user's wallet
     let new_balance = current_balance.0 - withdraw_req.amount;
@@ -262,7 +260,7 @@ async fn withdraw(
     .await
     .expect("Error recording transaction");
 
-    println!(
+    info!(
         "Withdrawal of {} successful. New balance: {}",
         withdraw_req.amount, new_balance
     );
@@ -282,9 +280,18 @@ struct AppState {
 }
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables from .env file
+    // let env = env::var("APP_ENV").unwrap_or_else(|_| "dev".to_string());
+    // let env_file = format!(".env.{}", env);
+    // dotenv::from_filename(env_file)
+    //     .ok()
+    //     .expect("Failed to load .env file");
+    // Set the default log level to info
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO) // Set the log level to INFO
+        .init();
+    info!("Starting the wallet");
+    info!("Info this is working");
     dotenv().ok();
-    println!("Starting the wallet");
 
     let pool = establish_connection().await;
 
@@ -308,7 +315,7 @@ async fn main() -> std::io::Result<()> {
             .service(fetch_or_create_user)
             .service(get_leaderboard)
     })
-    .bind("127.0.0.1:8080")?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

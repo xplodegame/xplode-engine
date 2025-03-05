@@ -1,0 +1,29 @@
+FROM rust:latest as builder
+
+WORKDIR /app
+
+# Copy the entire project
+COPY . .
+
+# Build the wallet application in release mode
+RUN cargo build --release --bin wallet
+
+# Create a smaller runtime image
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built binary from the builder stage
+COPY --from=builder /app/target/release/wallet /app/wallet
+
+# Expose the port the wallet service runs on
+EXPOSE 8080
+
+# Set the command to run the wallet service
+CMD ["/app/wallet"]

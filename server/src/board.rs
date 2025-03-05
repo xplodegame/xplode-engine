@@ -1,5 +1,6 @@
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use crate::seed_gen::get_bomb_coords;
 
@@ -41,7 +42,7 @@ impl Board {
     }
 
     pub fn display(&self) {
-        println!("╔{}╗", "═".repeat(self.n * 5));
+        info!("╔{}╗", "═".repeat(self.n * 5));
         for (row_idx, row) in self.grid.iter().enumerate() {
             // Start of row
             print!("║ ");
@@ -66,9 +67,9 @@ impl Board {
 
             // Row number on the right side
             if row_idx == self.n - 1 {
-                println!("║ {}", row_idx)
+                info!("║ {}", row_idx)
             } else {
-                println!("║ {}\n\n", row_idx);
+                info!("║ {}\n\n", row_idx);
             }
         }
 
@@ -79,6 +80,5 @@ impl Board {
         for col in 0..self.n {
             print!("{:<3} ", col);
         }
-        println!();
     }
 }

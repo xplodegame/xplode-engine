@@ -1,9 +1,9 @@
 use sqlx::{postgres::PgPool, Pool, Postgres};
+use tracing::info;
 
 use std::env;
 
 use anyhow::{Ok, Result};
-use dotenv::dotenv;
 
 use crate::{
     models::{Pnl, User, Wallet},
@@ -11,10 +11,8 @@ use crate::{
 };
 
 pub async fn establish_connection() -> Pool<Postgres> {
-    dotenv().ok();
-
     let db_url = env::var("DATABASE_URL").unwrap();
-    println!("Db url: {:?} ", db_url);
+    info!("Db url: {:?} ", db_url);
 
     PgPool::connect(&db_url)
         .await
@@ -48,7 +46,7 @@ pub async fn update_user_wallet<'a>(
     currency: Currency,
     new_balance: f64,
 ) -> anyhow::Result<()> {
-    println!("Updating user wallet: {}", user_id);
+    info!("Updating user wallet: {}", user_id);
     let mut conn = pool
         .acquire()
         .await

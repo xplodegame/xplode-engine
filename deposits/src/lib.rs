@@ -5,7 +5,7 @@ use solana_sdk::{
     signature::Keypair, signer::Signer, system_instruction, system_program,
     transaction::Transaction,
 };
-use std::{path::Path, str::FromStr, sync::Arc};
+use std::{env, path::Path, str::FromStr, sync::Arc};
 
 async fn handle_deposit(
     connection: Arc<RpcClient>,
@@ -32,7 +32,7 @@ async fn handle_deposit(
             AccountMeta::new_readonly(system_program::id(), false),
         ],
         data: {
-            let mut data = vec![91, 60, 51, 162, 44, 140, 96, 24];
+            let mut data = vec![91, 60, 51, 162, 44, 140, 96, 24]; // discriminator for forward deposit
             data.extend_from_slice(&amount.to_le_bytes());
             data
         },
@@ -69,9 +69,11 @@ impl DepositService {
         let treasury_data = std::fs::read_to_string(treasury_keypair_path).unwrap();
         let treasury_bytes: Vec<u8> = serde_json::from_str(&treasury_data).unwrap();
         let treasury = Keypair::from_bytes(&treasury_bytes).unwrap();
+        let redis_url = env::var("REDIS_URL").unwrap();
+        let client = Client::open(redis_url.clone()).expect("Failed to create Redis client");
 
         Self {
-            redis: Arc::new(Client::open(std::env::var("REDIS_URL").unwrap()).unwrap()),
+            redis: Arc::new(client),
             connection: Arc::new(connection),
             treasury: Arc::new(treasury),
             //program_id: Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap(),
@@ -85,12 +87,17 @@ impl DepositService {
         let (pda, _) =
             Pubkey::find_program_address(&[b"deposit", user_pubkey.as_ref()], &self.program_id);
 
+        println!("PDA: {:?}", pda);
         let mut conn = self.redis.get_connection()?;
-        redis::cmd("HSET")
+        let result = redis::cmd("HSET")
             .arg("deposit_addresses")
             .arg(pda.to_string())
             .arg(user_pubkey.to_string())
-            .exec(&mut conn)?;
+            .exec(&mut conn);
+
+        if let Err(err) = result {
+            eprintln!("Error executing HSET: {:?}", err);
+        }
         Ok(pda)
     }
 
@@ -171,7 +178,7 @@ impl DepositService {
 
 // //     tokio::spawn(async move {
 // //         loop {
-// //             println!("Reconnecting ...");
+// //             info!("Reconnecting ...");
 // //             let (subscription, mut account_subscription_receiver) =
 // //                 PubsubClient::account_subscribe(
 // //                     url,
@@ -188,7 +195,7 @@ impl DepositService {
 // //             loop {
 // //                 match account_subscription_receiver.recv() {
 // //                     Ok(response) => {
-// //                         // println!("account subscription response: {:?}", response);
+// //                         // info!("account subscription response: {:?}", response);
 // //                         if response.value.lamports > 0 {
 // //                             if let Err(e) = handle_deposit(
 // //                                 &connection,
@@ -200,12 +207,12 @@ impl DepositService {
 // //                             )
 // //                             .await
 // //                             {
-// //                                 eprintln!("Error handling deposit: {}", e);
+// //                                 einfo!("Error handling deposit: {}", e);
 // //                             }
 // //                         }
 // //                     }
 // //                     Err(e) => {
-// //                         println!("account subscription error: {:?}", e);
+// //                         info!("account subscription error: {:?}", e);
 // //                         break;
 // //                     }
 // //                 }
