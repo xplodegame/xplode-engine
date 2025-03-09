@@ -1,30 +1,53 @@
+# Builder stage
 FROM rust:latest as builder
 
 WORKDIR /app
 
-# Copy the entire project
+# Install only build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# # First, create a dummy project and build dependencies
+# COPY Cargo.toml ./
+# COPY common/Cargo.toml common/
+# COPY server/Cargo.toml server/
+# COPY deposits/Cargo.toml deposits/
+# COPY deposit-bg-worker/Cargo.toml deposit-bg-worker/
+# COPY wallet/Cargo.toml wallet/
+
+# # Create dummy source files
+# RUN mkdir -p common/src server/src deposits/src deposit-bg-worker/src wallet/src \
+#     && echo "pub fn main() {}" > server/src/main.rs \
+#     && echo "pub fn main() {}" > deposit-bg-worker/src/main.rs \
+#     && echo "pub fn main() {}" > wallet/src/main.rs \
+#     && touch common/src/lib.rs deposits/src/lib.rs
+
+# # Build dependencies
+# RUN cargo build --release --bin server
+
+# Now copy the actual source code
 COPY . .
 
-# Build the server application in release mode
+# Build the application
 RUN cargo build --release --bin server
 
-# Create a smaller runtime image
+# Runtime stage
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install only runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built binary from the builder stage
-COPY --from=builder /app/target/release/server /app/server
+# Copy the binary and any necessary files
+COPY --from=builder /app/target/release/server /app/
+COPY --from=builder /app/.env* /app/
 
-# Expose the port the server runs on
 EXPOSE 3000
 
-# Set the command to run the server
-CMD ["/app/server"]
+CMD ["./server"]
 

@@ -3,6 +3,7 @@ members = [ "common", "deposit-bg-worker", "deposits",
     "server",
     "wallet"
 ]
+resolver = "2"
 
 # Optional: You can specify workspace-wide dependencies
 [workspace.dependencies]
@@ -40,3 +41,4 @@ solana-sdk = "1.17.3"
 solana-client = "1.17.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+warp = "0.3"

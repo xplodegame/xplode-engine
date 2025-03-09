@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-wallet = { path = "../wallet" }
 serde.workspace = true
 rand.workspace = true
 uuid.workspace = true
@@ -25,3 +24,4 @@ common = {path = "../common" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dotenv.workspace = true
+warp.workspace = true
