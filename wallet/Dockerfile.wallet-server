@@ -1,14 +1,20 @@
+# Builder stage
 FROM rust:latest as builder
 
 WORKDIR /app
 
-# Copy the entire project
+# Install only build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Now copy the actual source code
 COPY . .
 
-# Build the wallet application in release mode
+# Build the application
 RUN cargo build --release --bin wallet
 
-# Create a smaller runtime image
+# Runtime stage
 FROM debian:bookworm-slim
 
 WORKDIR /app
@@ -19,11 +25,13 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built binary from the builder stage
-COPY --from=builder /app/target/release/wallet /app/wallet
+# Copy the binary and necessary files
+COPY --from=builder /app/target/release/wallet /app/
+COPY --from=builder /app/.env* /app/
+COPY treasury-keypair.json /app/treasury-keypair.json
 
-# Expose the port the wallet service runs on
+# Expose the port the wallet server runs on
 EXPOSE 8080
 
-# Set the command to run the wallet service
-CMD ["/app/wallet"]
+# Set the command to run the wallet server
+CMD ["./wallet"]

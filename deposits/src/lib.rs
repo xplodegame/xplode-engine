@@ -1,3 +1,4 @@
+use anchor_lang::solana_program::info;
 use redis::Client;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -60,7 +61,9 @@ pub struct DepositService {
 }
 
 impl DepositService {
-    pub fn new<P: AsRef<Path>>(treasury_keypair_path: P, program_id: Pubkey) -> Self {
+    pub fn new<P: AsRef<Path>>(treasury_keypair_path: P, program_id: String) -> Self {
+        info!("Creating DepositService");
+        let program_id = Pubkey::from_str(&program_id).unwrap();
         let connection = RpcClient::new_with_commitment(
             std::env::var("SOLANA_RPC_URL").unwrap(),
             CommitmentConfig::confirmed(),

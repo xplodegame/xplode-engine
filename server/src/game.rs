@@ -117,26 +117,35 @@ pub struct GameRegistry {
 type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 impl GameRegistry {
+    // Only save game state to Redis for critical state changes
     pub async fn save_game_state(&self, game_id: String, state: GameState) {
-        // Sync to Redis (async write to avoid blocking)
-        let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
-        conn.set_ex::<String, String, ()>(
-            game_id.clone(),
-            serde_json::to_string(&state).unwrap(),
-            300,
-        )
-        .await
-        .expect("Faield to update game state");
+        // Don't block the main flow - fire and forget
+        tokio::spawn({
+            let redis = self.redis.clone();
+            let game_id = game_id.clone();
+            let state_json = serde_json::to_string(&state).unwrap();
+
+            async move {
+                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                    let _ = conn
+                        .set_ex::<String, String, ()>(game_id, state_json, 300)
+                        .await;
+                }
+            }
+        });
     }
 
+    // Only load game states from Redis during startup or when absolutely needed
     pub async fn load_game_state(&self) {
-        let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
+        let mut conn = match self.redis.get_multiplexed_async_connection().await {
+            Ok(conn) => conn,
+            Err(_) => return, // Fail silently and rely on in-memory state
+        };
 
-        let keys: Vec<String> = conn.keys("*").await.unwrap();
-        info!(
-            "***************************Keys length: {}************************************",
-            keys.len()
-        );
+        let keys: Vec<String> = match conn.keys("*").await {
+            Ok(keys) => keys,
+            Err(_) => return,
+        };
 
         for key in keys {
             if let Ok(state) = conn.get::<_, String>(key.clone()).await {
@@ -147,16 +156,21 @@ impl GameRegistry {
         }
     }
 
-    // Load Game State from Redis if Not in Memory
+    // Prioritize in-memory state, only fall back to Redis when necessary
     pub async fn get_game_state(&self, game_id: &str) -> Option<GameState> {
-        let mut game_states = self.games.write().await;
-
-        if let Some(state) = game_states.get(game_id) {
+        // First check in-memory cache
+        let games_read = self.games.read().await;
+        if let Some(state) = games_read.get(game_id) {
             return Some(state.clone());
         }
+        drop(games_read);
 
-        // Not in-memory: Load from Redis
-        let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
+        // Only if not in memory, try Redis once
+        let mut conn = match self.redis.get_multiplexed_async_connection().await {
+            Ok(conn) => conn,
+            Err(_) => return None,
+        };
+
         let redis_value: Option<String> = redis::cmd("GET")
             .arg(game_id)
             .query_async(&mut conn)
@@ -165,35 +179,44 @@ impl GameRegistry {
 
         if let Some(state_json) = redis_value {
             if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
-                game_states.insert(game_id.to_string(), game_state.clone());
+                // Update in-memory cache
+                self.games
+                    .write()
+                    .await
+                    .insert(game_id.to_string(), game_state.clone());
                 return Some(game_state);
             }
         }
         None
     }
 
-    // Load Game State from Redis if Not in Memory
+    // Only load from Redis if absolutely necessary
     pub async fn load_game_if_absent(&self, game_id: &str) {
-        info!("Loading game");
-        let mut game_states = self.games.write().await;
-
-        if game_states.get(game_id).is_some() {
-            info!("Here already game present");
+        // Check if already in memory first
+        let games_read = self.games.read().await;
+        if games_read.get(game_id).is_some() {
             return;
         }
+        drop(games_read);
 
-        // Not in-memory: Load from Redis
-        let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
+        // Only try Redis once
+        let mut conn = match self.redis.get_multiplexed_async_connection().await {
+            Ok(conn) => conn,
+            Err(_) => return,
+        };
+
         let redis_value: Option<String> = redis::cmd("GET")
             .arg(game_id)
             .query_async(&mut conn)
             .await
             .ok();
 
-        info!("Redis value for game state: {:?}", redis_value);
         if let Some(state_json) = redis_value {
             if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
-                game_states.insert(game_id.to_string(), game_state.clone());
+                self.games
+                    .write()
+                    .await
+                    .insert(game_id.to_string(), game_state);
             }
         }
     }
@@ -786,78 +809,75 @@ impl GameServer {
                                 locks,
                                 ..
                             } => {
-                                // TODO add backend logic to check turn
-                                if board.mine(x, y) {
-                                    // If mine is hit, determine winner
-                                    let loser = turn_idx;
+                                let game_ended = board.mine(x, y);
+
+                                // Clone everything we need before any modifications
+                                let players_clone = players.clone();
+                                let turn_idx_clone = *turn_idx;
+                                let single_bet_size_clone = *single_bet_size;
+
+                                if game_ended {
                                     let new_game_state = GameState::FINISHED {
                                         game_id: game_id.clone(),
-                                        loser_idx: *loser,
+                                        loser_idx: turn_idx_clone,
                                         board: board.clone(),
-                                        players: players.clone(),
-                                        single_bet_size: *single_bet_size,
+                                        players: players_clone.clone(),
+                                        single_bet_size: single_bet_size_clone,
                                     };
+                                    *game_state = new_game_state.clone();
+
+                                    // Async DB operations
+                                    let winning_amount =
+                                        single_bet_size_clone / ((players_clone.len() - 1) as f64);
+                                    let user_ids: Vec<i32> = players_clone
+                                        .iter()
+                                        .map(|p| p.id.parse::<i32>().unwrap())
+                                        .collect();
 
                                     // remove players from active state
                                     let mut active_players_write =
                                         registry.active_players.write().await;
 
-                                    let ids =
-                                        players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                                    let ids = players_clone
+                                        .iter()
+                                        .map(|p| p.id.clone())
+                                        .collect::<Vec<_>>();
 
                                     active_players_write.retain(|x| !ids.contains(x));
-                                    // asyncrhonously save the state in redis
+
                                     registry
-                                        .save_game_state(game_id.clone(), new_game_state.clone())
+                                        .save_game_state(game_id.clone(), new_game_state)
                                         .await;
 
-                                    // UPDATING THE DB AS WELL HERE
-                                    let winning_amount =
-                                        *single_bet_size / ((players.clone().len() - 1) as f64);
-
-                                    let user_ids: Vec<i32> = players
-                                        .iter()
-                                        .map(|p| p.id.parse::<i32>().unwrap())
-                                        .collect();
-                                    db::update_player_balances(
-                                        &pool,
-                                        &user_ids,
-                                        *loser,
-                                        *single_bet_size,
-                                        winning_amount,
-                                    )
-                                    .await?;
-                                    *game_state = new_game_state;
+                                    let pool_clone = pool.clone();
+                                    tokio::spawn(async move {
+                                        let _ = db::update_player_balances(
+                                            &pool_clone,
+                                            &user_ids,
+                                            turn_idx_clone,
+                                            single_bet_size_clone,
+                                            winning_amount,
+                                        )
+                                        .await;
+                                    });
                                 } else {
-                                    // Switch turns
+                                    // Not needed here as they will be updated in lock complete
                                     // *turn_idx = (*turn_idx + 1) % players.len();
                                     *locks = None;
-                                    // asyncrhonously save the state in redis
-                                    registry
-                                        .save_game_state(game_id.clone(), game_state.clone())
-                                        .await;
                                 }
 
+                                // Broadcast the update for both cases
                                 let game_message = GameMessage::GameUpdate(game_state.clone());
-
                                 let wrapper = GameMessageWrapper {
                                     server_id: server_id.clone(),
                                     game_message,
                                 };
-
+                                drop(games_write);
                                 registry
                                     .publish_message(game_id.clone(), wrapper, false)
                                     .await?;
-
-                                // // Get the channel to broadcast game state
-                                // let game_channels_read = registry.game_channels.read().await;
-                                // if let Some(channel) = game_channels_read.get(&game_id) {
-                                //     let response = GameMessage::GameUpdate(game_state.clone());
-                                //     channel.send(response).await?;
-                                // }
                             }
                             _ => {
-                                // FIXME: I think it is not relevant
                                 // Invalid game state for move
                                 ws_write
                                     .lock()
@@ -876,15 +896,14 @@ impl GameServer {
                     let mut games_write = registry.games.write().await;
 
                     if let Some(game_state) = games_write.get_mut(&game_id) {
-                        if let GameState::RUNNING { game_id, locks, .. } = game_state {
+                        if let GameState::RUNNING { locks, .. } = game_state {
                             let locks = locks.get_or_insert_with(Vec::new);
                             locks.push((x, y));
-                            registry
-                                .save_game_state(game_id.clone(), game_state.clone())
-                                .await;
+                            // Don't save to Redis for lock updates - they're temporary
                         }
-                        let game_message = GameMessage::GameUpdate(game_state.clone());
 
+                        // Just broadcast the update
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
                         let wrapper = GameMessageWrapper {
                             server_id: server_id.clone(),
                             game_message,
@@ -908,13 +927,13 @@ impl GameServer {
                         {
                             *turn_idx = (*turn_idx + 1) % players.len();
 
-                            // asyncrhonously save the state in redis
+                            // Save turn changes to Redis - this is important for game state
                             registry
                                 .save_game_state(game_id.clone(), game_state.clone())
                                 .await;
                         }
-                        let game_message = GameMessage::GameUpdate(game_state.clone());
 
+                        let game_message = GameMessage::GameUpdate(game_state.clone());
                         let wrapper = GameMessageWrapper {
                             server_id: server_id.clone(),
                             game_message,
