@@ -1,4 +1,4 @@
-use std::{env, str::FromStr};
+use std::{env, fs};
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
@@ -13,9 +13,9 @@ use dotenv::dotenv;
 use models::{User, Wallet};
 
 use serde_json::json;
-use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 use utils::TxType;
 
 const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
@@ -140,6 +140,12 @@ async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
         .expect("Failed to fetch all pnls");
 
     HttpResponse::Ok().json(json!(pnls))
+}
+
+#[actix_web::get("/health")]
+async fn health_check() -> impl Responder {
+    info!("Health check request arrived");
+    HttpResponse::Ok().content_type("text/plain").body("OK")
 }
 
 #[actix_web::post("/deposit")]
@@ -280,36 +286,36 @@ struct AppState {
 }
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // let env = env::var("APP_ENV").unwrap_or_else(|_| "dev".to_string());
-    // let env_file = format!(".env.{}", env);
-    // dotenv::from_filename(env_file)
-    //     .ok()
-    //     .expect("Failed to load .env file");
-    // Set the default log level to info
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO) // Set the log level to INFO
-        .init();
-    info!("Starting the wallet");
-    info!("Info this is working");
     dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
+    info!("Starting the wallet");
+
+    info!("Current working directory: {:?}", env::current_dir());
     let pool = establish_connection().await;
 
-    let program_id = Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap();
+    let program_id = "FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP";
 
     let cwd = std::env::current_dir().unwrap();
-    let deposit_service = DepositService::new(cwd.join("treasury-keypair.json"), program_id);
+    let deposit_service =
+        DepositService::new(cwd.join("treasury-keypair.json"), program_id.to_string());
 
     let app_state = web::Data::new(AppState {
         pool,
         deposit_service,
     });
 
+    info!("Starting HTTP server on 0.0.0.0:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .wrap(Logger::default())
             .wrap(Cors::permissive())
+            .service(health_check)
             .service(deposit)
             .service(withdraw)
             .service(fetch_or_create_user)

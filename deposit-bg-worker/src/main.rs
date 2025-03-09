@@ -15,10 +15,10 @@ async fn main() -> anyhow::Result<()> {
     //     .expect("Failed to load .env file");
     tracing_subscriber::fmt::init();
     info!("Starting the deposit background service");
-    let program_id = Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap();
+    let program_id = "FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP";
 
     let cwd = std::env::current_dir().unwrap();
-    let service = DepositService::new(cwd.join("treasury-keypair.json"), program_id);
+    let service = DepositService::new(cwd.join("treasury-keypair.json"), program_id.to_string());
 
     let pool = establish_connection();
     let mut conn = pool.await.acquire().await.expect("DB conn failed");
