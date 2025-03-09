@@ -77,7 +77,7 @@ impl RazorpayClient {
         currency: &str,
         user: &User,
     ) -> Result<CreateOrderResponse, reqwest::Error> {
-        println!("Creating order");
+        info!("Creating order");
         let request = CreateOrderRequest {
             amount,
             currency: currency.to_string(),
