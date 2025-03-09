@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{env, fs};
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
@@ -13,8 +13,9 @@ use dotenv::dotenv;
 use models::{User, Wallet};
 
 use serde_json::json;
-use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 use utils::TxType;
 
 const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
@@ -28,7 +29,7 @@ async fn fetch_or_create_user(
         deposit_service,
     } = &**app_state;
 
-    println!("Got a request");
+    info!("Got a request");
     let mut conn = pool
         .acquire()
         .await
@@ -129,7 +130,7 @@ async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
         pool,
         deposit_service: _,
     } = &**app_state;
-    println!("Leaderboard request arrived");
+    info!("Leaderboard request arrived");
 
     let mut conn = pool.acquire().await.unwrap();
 
@@ -141,6 +142,12 @@ async fn get_leaderboard(app_state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok().json(json!(pnls))
 }
 
+#[actix_web::get("/health")]
+async fn health_check() -> impl Responder {
+    info!("Health check request arrived");
+    HttpResponse::Ok().content_type("text/plain").body("OK")
+}
+
 #[actix_web::post("/deposit")]
 async fn deposit(
     deposit_request: web::Json<DepositRequest>,
@@ -150,7 +157,7 @@ async fn deposit(
         pool,
         deposit_service: _,
     } = &**app_state;
-    println!("Deposit request arrived");
+    info!("Deposit request arrived");
 
     let mut conn = pool
         .acquire()
@@ -164,8 +171,6 @@ async fn deposit(
             .fetch_one(&mut conn)
             .await
             .expect("Error fetching wallet");
-
-    println!("Wallet: {:?}", wallet);
 
     let new_balance = deposit_request.amount + wallet.balance;
 
@@ -202,12 +207,11 @@ async fn withdraw(
     withdraw_req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    println!("Attempting to withdraw");
+    info!("Attempting to withdraw");
     let AppState {
         pool,
         deposit_service,
     } = &**app_state;
-    println!("Received withdraw request");
     let mut conn = pool
         .acquire()
         .await
@@ -235,7 +239,7 @@ async fn withdraw(
         .await
         .unwrap();
 
-    println!("Withdrawn tx hash: {:?}", withdraw_txhash);
+    info!("Withdrawn tx hash: {:?}", withdraw_txhash);
 
     // Deduct the amount from the user's wallet
     let new_balance = current_balance.0 - withdraw_req.amount;
@@ -262,7 +266,7 @@ async fn withdraw(
     .await
     .expect("Error recording transaction");
 
-    println!(
+    info!(
         "Withdrawal of {} successful. New balance: {}",
         withdraw_req.amount, new_balance
     );
@@ -282,33 +286,42 @@ struct AppState {
 }
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables from .env file
     dotenv().ok();
-    println!("Starting the wallet");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
+    info!("Starting the wallet");
+
+    info!("Current working directory: {:?}", env::current_dir());
     let pool = establish_connection().await;
 
-    let program_id = Pubkey::from_str("FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP").unwrap();
+    let program_id = "FFT8CyM7DnNoWG2AukQqCEyNtZRLJvxN9WK6S7mC5kLP";
 
     let cwd = std::env::current_dir().unwrap();
-    let deposit_service = DepositService::new(cwd.join("treasury-keypair.json"), program_id);
+    let deposit_service =
+        DepositService::new(cwd.join("treasury-keypair.json"), program_id.to_string());
 
     let app_state = web::Data::new(AppState {
         pool,
         deposit_service,
     });
 
+    info!("Starting HTTP server on 0.0.0.0:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .wrap(Logger::default())
             .wrap(Cors::permissive())
+            .service(health_check)
             .service(deposit)
             .service(withdraw)
             .service(fetch_or_create_user)
             .service(get_leaderboard)
     })
-    .bind("127.0.0.1:8080")?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

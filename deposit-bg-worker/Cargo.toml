@@ -16,3 +16,5 @@ tokio.workspace = true
 anyhow.workspace = true
 common = {path = "../common"}
 sqlx.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
