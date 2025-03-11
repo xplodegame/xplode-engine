@@ -1,16 +1,15 @@
-use std::env;
+use std::{env, fs, time::SystemTime};
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
     db,
-    models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{self, LeaderboardEntry, User, UserNetworkPnl, Wallet},
     utils::{
         self, Currency, DepositRequest, Network, UserDetailsRequest, WalletType, WithdrawRequest,
     },
 };
 use db::establish_connection;
-use deposits::sol::DepositService;
 use dotenv::dotenv;
 
 use serde_json::json;
@@ -19,17 +18,12 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
 
-const SOL_TO_LAMPORTS: u64 = 1_000_000_000;
-
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let AppState {
-        pool,
-        deposit_service,
-    } = &**app_state;
+    let AppState { pool } = &**app_state;
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
     // Check if the user already exists
@@ -44,7 +38,7 @@ async fn fetch_or_create_user(
             let wallet: Wallet =
                 sqlx::query_as("SELECT * FROM wallet WHERE user_id = $1 AND currency = $2")
                     .bind(user.id)
-                    .bind(Currency::SOL.to_string())
+                    .bind(Currency::MON.to_string())
                     .fetch_one(&mut *tx)
                     .await
                     .expect("Error fetching wallet");
@@ -53,39 +47,33 @@ async fn fetch_or_create_user(
 
             HttpResponse::Ok().json(json!({
                 "id": user.id,
-                "currency": "SOL",
+                "currency": Currency::MON.to_string(),
                 "balance": wallet.balance,
                 "wallet_type": wallet.wallet_type,
-                "wallet_address": wallet.wallet_address,
-                "user_pda": user.user_pda
+                "wallet_address": wallet.wallet_address
             }))
         }
         None => {
-            let user_pda = deposit_service
-                .generate_deposit_address()
-                .unwrap()
-                .to_string();
-
             // Create new user
             let created_user: User = sqlx::query_as(
-                "INSERT INTO users (clerk_id, email, name, user_pda) VALUES ($1, $2, $3, $4) RETURNING *",
+                "INSERT INTO users (clerk_id, email, name) VALUES ($1, $2, $3) RETURNING *",
             )
             .bind(&req.clerk_id)
             .bind(&req.email)
             .bind(&req.name)
-            .bind(user_pda)
             .fetch_one(&mut *tx)
             .await
             .expect("Error creating new user");
 
             // Create wallet with direct type
-            let _: Wallet = sqlx::query_as(
-                "INSERT INTO wallet (user_id, currency, balance, wallet_type) VALUES ($1, $2, $3, $4) RETURNING *",
+            let wallet: Wallet = sqlx::query_as(
+                "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address) VALUES ($1, $2, $3, $4, $5) RETURNING *",
             )
             .bind(created_user.id)
-            .bind(Currency::SOL.to_string())
+            .bind(Currency::MON.to_string())
             .bind(0.0)
-            .bind(WalletType::PDA.to_string())
+            .bind(WalletType::DIRECT.to_string())
+            .bind(req.wallet_address.clone().unwrap())
             .fetch_one(&mut *tx)
             .await
             .expect("Failed to create wallet");
@@ -94,48 +82,32 @@ async fn fetch_or_create_user(
 
             HttpResponse::Created().json(json!({
                 "user_id": created_user.id,
-                "currency": "SOL",
+                "currency": Currency::MON.to_string() ,
                 "balance": 0.0,
-                "wallet_type": WalletType::PDA.to_string(),
-                "wallet_address": "None"
+                "wallet_type": WalletType::DIRECT.to_string(),
+                "wallet_address": wallet.wallet_address
             }))
         }
     }
 }
 
-#[actix_web::get("/user-stats/{user_id}")]
+#[actix_web::get("/user-stats/{user_id}/{network}")]
 async fn get_user_stats(
-    user_id: web::Path<String>,
+    path: web::Path<(i32, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let user_id: i32 = user_id.into_inner().parse().unwrap();
-    let AppState {
-        pool,
-        deposit_service: _,
-    } = &**app_state;
+    let (user_id, network) = path.into_inner();
+    let AppState { pool } = &**app_state;
 
-    let mut tx = pool.begin().await.expect("Failed to start transaction");
-
-    // Use LEFT JOIN to handle case where user has no PNL records yet
-    let user_pnl: Option<UserNetworkPnl> =
+    let stats: UserNetworkPnl =
         sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND network = $2")
             .bind(user_id)
-            .bind(Network::SOLANA.to_string())
-            .fetch_optional(&mut *tx)
+            .bind(network)
+            .fetch_one(pool)
             .await
-            .expect("Error fetching user PNL");
+            .expect("Error fetching user stats");
 
-    tx.commit().await.expect("Failed to commit transaction");
-
-    match user_pnl {
-        Some(pnl) => HttpResponse::Ok().json(pnl),
-        None => HttpResponse::Ok().json(json!({
-            "user_id": user_id,
-            "network": Network::SOLANA.to_string(),
-            "total_matches": 0,
-            "total_profit": 0.0
-        })),
-    }
+    HttpResponse::Ok().json(stats)
 }
 
 #[actix_web::get("/leaderboard/{network}/{timeframe}")]
@@ -144,10 +116,7 @@ async fn get_leaderboard(
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     let (network, timeframe) = path.into_inner();
-    let AppState {
-        pool,
-        deposit_service: _,
-    } = &**app_state;
+    let AppState { pool } = &**app_state;
 
     let leaders: Vec<LeaderboardEntry> = match timeframe.as_str() {
         "24h" => db::get_leaderboard_24h(pool, &network, 100)
@@ -173,10 +142,8 @@ async fn deposit(
     deposit_request: web::Json<DepositRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let AppState {
-        pool,
-        deposit_service: _,
-    } = &**app_state;
+    let AppState { pool } = &**app_state;
+    let deposit_request = deposit_request.into_inner();
     info!("Deposit request arrived");
 
     let mut tx = pool.begin().await.expect("Failed to start transaction");
@@ -203,7 +170,8 @@ async fn deposit(
 
     // Record the transaction
     sqlx::query(
-        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) 
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(deposit_request.user_id)
     .bind(deposit_request.amount)
@@ -229,10 +197,8 @@ async fn withdraw(
     withdraw_req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let AppState {
-        pool,
-        deposit_service,
-    } = &**app_state;
+    let AppState { pool } = &**app_state;
+    let withdraw_req = withdraw_req.into_inner();
     info!("Attempting to withdraw");
 
     let mut tx = pool.begin().await.expect("Failed to start transaction");
@@ -249,14 +215,6 @@ async fn withdraw(
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
-    let withdraw_txhash = deposit_service
-        .withdraw_to_user_from_treasury(
-            withdraw_req.withdraw_address.clone(),
-            (withdraw_req.amount * SOL_TO_LAMPORTS as f64) as u64,
-        )
-        .await
-        .unwrap();
-
     let new_balance = wallet.balance - withdraw_req.amount;
 
     // Update the user's wallet balance
@@ -270,15 +228,23 @@ async fn withdraw(
     .await
     .expect("Error updating wallet balance");
 
+    // Generate transaction hash for withdrawal
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let tx_hash = format!("withdraw_{}", timestamp);
+
     // Record the transaction
     sqlx::query(
-        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) 
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(withdraw_req.user_id)
     .bind(withdraw_req.amount)
     .bind(withdraw_req.currency.to_string())
     .bind(TxType::WITHDRAWAL.to_string())
-    .bind(&withdraw_txhash)
+    .bind(&tx_hash)
     .execute(&mut *tx)
     .await
     .expect("Error recording transaction");
@@ -289,14 +255,13 @@ async fn withdraw(
         "user_id": withdraw_req.user_id,
         "currency": withdraw_req.currency,
         "balance": new_balance,
-        "tx_hash": withdraw_txhash,
+        "tx_hash": tx_hash,
         "withdraw_address": withdraw_req.withdraw_address
     }))
 }
 
 struct AppState {
     pool: Pool<Postgres>,
-    deposit_service: DepositService,
 }
 
 #[actix_web::main]
@@ -308,23 +273,11 @@ async fn main() -> std::io::Result<()> {
         )
         .init();
 
-    info!("Starting the wallet");
-
-    info!("Current working directory: {:?}", env::current_dir());
+    info!("Starting the wallet service");
     let pool = establish_connection().await;
+    let app_state = web::Data::new(AppState { pool });
 
-    let program_id = env::var("PROGRAM_ID").unwrap();
-
-    let cwd = std::env::current_dir().unwrap();
-    let deposit_service =
-        DepositService::new(cwd.join("treasury-keypair.json"), program_id.to_string());
-
-    let app_state = web::Data::new(AppState {
-        pool,
-        deposit_service,
-    });
-
-    info!("Starting HTTP server on 0.0.0.0:8080");
+    info!("Starting HTTP server on 0.0.0.0:8081");
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
@@ -337,7 +290,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
     })
-    .bind("0.0.0.0:8080")?
+    .bind("0.0.0.0:8081")?
     .run()
     .await
 }
