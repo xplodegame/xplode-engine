@@ -756,6 +756,7 @@ impl GameServer {
                                     *loser,
                                     *single_bet_size,
                                     winning_amount,
+                                    None,
                                 )
                                 .await?;
                                 *game_state = new_game_state;
@@ -857,6 +858,7 @@ impl GameServer {
                                             turn_idx_clone,
                                             single_bet_size_clone,
                                             winning_amount,
+                                            None,
                                         )
                                         .await;
                                     });
@@ -982,6 +984,7 @@ impl GameServer {
                                 loser_idx,
                                 single_bet_size,
                                 winning_amount,
+                                None,
                             )
                             .await?;
                         }

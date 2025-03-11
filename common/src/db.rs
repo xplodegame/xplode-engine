@@ -1,19 +1,16 @@
+use anyhow::{Error, Result};
 use sqlx::{postgres::PgPool, Pool, Postgres};
+use std::env;
 use tracing::info;
 
-use std::env;
-
-use anyhow::{Ok, Result};
-
 use crate::{
-    models::{Pnl, User, Wallet},
-    utils::Currency,
+    models::{GamePnl, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    utils::{Currency, Network},
 };
 
 pub async fn establish_connection() -> Pool<Postgres> {
     let db_url = env::var("DATABASE_URL").unwrap();
     info!("Db url: {:?} ", db_url);
-
     PgPool::connect(&db_url)
         .await
         .expect("Failed to create pool")
@@ -23,143 +20,160 @@ pub async fn get_user_wallet(
     pool: &Pool<Postgres>,
     user_id: i32,
     currency: Currency,
-) -> anyhow::Result<Wallet> {
-    let mut conn = pool
-        .acquire()
+) -> Result<Wallet> {
+    sqlx::query_as::<_, Wallet>("SELECT * FROM wallet WHERE user_id = $1 AND currency = $2")
+        .bind(user_id)
+        .bind(currency.to_string())
+        .fetch_one(pool)
         .await
-        .expect("failed to get connection from the pool");
-
-    let wallet: Wallet =
-        sqlx::query_as("Select * from wallet where user_id = $1 and currency = $2")
-            .bind(user_id)
-            .bind(currency.to_string())
-            .fetch_one(&mut conn)
-            .await
-            .expect("Failed to fetch wallet");
-
-    Ok(wallet)
+        .map_err(Error::from)
 }
 
-pub async fn update_user_wallet<'a>(
-    pool: &'a Pool<Postgres>,
+pub async fn update_user_wallet(
+    pool: &Pool<Postgres>,
     user_id: i32,
     currency: Currency,
     new_balance: f64,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     info!("Updating user wallet: {}", user_id);
-    let mut conn = pool
-        .acquire()
-        .await
-        .expect("failed to get connection from the pool");
-
-    sqlx::query("UPDATE wallet SET balance = $1 WHERE user_id = $2 and currency = $3")
-        .bind(new_balance)
-        .bind(user_id)
-        .bind(currency.to_string())
-        .execute(&mut conn)
-        .await
-        .expect("Error updating user wallet");
+    sqlx::query(
+        "UPDATE wallet SET balance = $1, updated_at = CURRENT_TIMESTAMP 
+         WHERE user_id = $2 AND currency = $3",
+    )
+    .bind(new_balance)
+    .bind(user_id)
+    .bind(currency.to_string())
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
-pub async fn create_user_and_update_tables<'a>(
-    pool: &'a Pool<Postgres>,
+pub async fn create_user_and_wallet(
+    pool: &Pool<Postgres>,
     user: &User,
-) -> anyhow::Result<()> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .expect("Failed to get connections from the pool");
+    wallet_type: &str,
+    wallet_address: Option<String>,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
 
-    sqlx::query("INSERT INTO wallet (user_id, currency, balance) VALUES ($1, $2, $3)")
-        .bind(user.id) // Bind the user_id
-        .bind(Currency::SOL.to_string()) // Set a default currency, e.g., USD
-        .bind(0) // Initialize balance to deposit amount
-        .execute(&mut conn)
-        .await
-        .expect("Error creating initial wallet");
+    sqlx::query(
+        "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address) 
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user.id)
+    .bind(Currency::SOL.to_string())
+    .bind(0.0)
+    .bind(wallet_type)
+    .bind(wallet_address)
+    .execute(&mut *tx)
+    .await?;
 
-    sqlx::query("INSERT INTO pnl (user_id, num_matches, profit) VALUES ($1, $2, $3)")
-        .bind(user.id)
-        .bind(0)
-        .bind(0)
-        .execute(&mut conn)
-        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
-pub async fn update_pnl<'a>(pool: &'a Pool<Postgres>, user_id: i32, profit: f64) -> Result<()> {
-    let mut conn = pool.acquire().await.unwrap();
-
-    let user_pnl: Pnl = sqlx::query_as("Select * from pnl where user_id = $1")
-        .bind(user_id)
-        .fetch_one(&mut conn)
-        .await
-        .expect("Failed to fetch user pnl");
-
-    let pnl = user_pnl.profit + profit;
-    let num_matches = user_pnl.num_matches + 1;
-    sqlx::query("UPDATE pnl SET profit = $1, num_matches = $2 WHERE user_id = $3")
-        .bind(pnl)
-        .bind(num_matches)
-        .bind(user_id)
-        .execute(&mut conn)
-        .await
-        .expect("Error updating user wallet");
-
-    Ok(())
-}
-
-pub async fn update_player_balances<'a>(
-    pool: &'a Pool<Postgres>,
+pub async fn update_player_balances(
+    pool: &Pool<Postgres>,
     user_ids: &[i32],
     loser_idx: usize,
     single_bet_size: f64,
     winning_amount: f64,
+    network: Option<Network>,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    // Default to SOLANA network if none is provided
+    let network = network.unwrap_or(Network::SOLANA);
+    let network_str = network.to_string();
 
     for (i, user_id) in user_ids.iter().enumerate() {
+        let current_balance: f64 =
+            sqlx::query_scalar("SELECT balance FROM wallet WHERE user_id = $1 AND currency = $2")
+                .bind(user_id)
+                .bind(Currency::SOL.to_string())
+                .fetch_one(&mut *tx)
+                .await?;
+
         let (new_balance, profit) = if i == loser_idx {
-            (
-                get_user_wallet(&pool, *user_id, Currency::SOL)
-                    .await?
-                    .balance
-                    - single_bet_size,
-                -single_bet_size,
-            )
+            (current_balance - single_bet_size, -single_bet_size)
         } else {
-            (
-                get_user_wallet(&pool, *user_id, Currency::SOL)
-                    .await?
-                    .balance
-                    + winning_amount,
-                winning_amount,
-            )
+            (current_balance + winning_amount, winning_amount)
         };
 
-        // Fetch existing PNL
-        let user_pnl: Pnl = sqlx::query_as("SELECT * FROM pnl WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE wallet SET balance = $1, updated_at = CURRENT_TIMESTAMP 
+             WHERE user_id = $2 AND currency = $3",
+        )
+        .bind(new_balance)
+        .bind(user_id)
+        .bind(Currency::SOL.to_string())
+        .execute(&mut *tx)
+        .await?;
 
-        // Execute updates
-        sqlx::query("UPDATE wallet SET balance = $1 WHERE user_id = $2 AND currency = $3")
-            .bind(new_balance)
-            .bind(user_id)
-            .bind(Currency::SOL.to_string())
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query("UPDATE pnl SET profit = $1, num_matches = $2 WHERE user_id = $3")
-            .bind(user_pnl.profit + profit)
-            .bind(user_pnl.num_matches + 1)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
+        record_game_result_tx(&mut tx, *user_id, &network_str, profit).await?;
     }
 
     tx.commit().await?;
     Ok(())
+}
+
+async fn record_game_result_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    user_id: i32,
+    network: &str,
+    profit: f64,
+) -> Result<()> {
+    sqlx::query("INSERT INTO game_pnl (user_id, network, profit) VALUES ($1, $2, $3)")
+        .bind(user_id)
+        .bind(network)
+        .bind(profit)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO user_network_pnl (user_id, network, total_matches, total_profit)
+        VALUES ($1, $2, 1, $3)
+        ON CONFLICT (user_id, network) DO UPDATE
+        SET total_matches = user_network_pnl.total_matches + 1,
+            total_profit = user_network_pnl.total_profit + $3,
+            updated_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(user_id)
+    .bind(network)
+    .bind(profit)
+    .execute(&mut *tx)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_leaderboard_24h(
+    pool: &PgPool,
+    network: &str,
+    limit: i64,
+) -> Result<Vec<LeaderboardEntry>> {
+    sqlx::query_as::<_, LeaderboardEntry>(
+        "SELECT * FROM leaderboard_24h WHERE network = $1 LIMIT $2",
+    )
+    .bind(network)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(Error::from)
+}
+
+pub async fn get_leaderboard_all_time(
+    pool: &PgPool,
+    network: &str,
+    limit: i64,
+) -> Result<Vec<LeaderboardEntry>> {
+    sqlx::query_as::<_, LeaderboardEntry>(
+        "SELECT * FROM leaderboard_all_time WHERE network = $1 LIMIT $2",
+    )
+    .bind(network)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(Error::from)
 }
