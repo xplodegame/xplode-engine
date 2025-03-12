@@ -1,0 +1,17 @@
+[package]
+name = "evm-deposits"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-network = "0.12"
+alloy-primitives = "0.8.22"
+alloy-provider = { version = "0.12" }
+alloy-rpc-types = "0.12"
+alloy-signer = "0.12"
+alloy-signer-local = "0.12"
+url = "2.5"
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+
