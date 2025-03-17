@@ -5,7 +5,7 @@ use serde::Serialize;
 #[derive(Deserialize, Serialize, sqlx::FromRow)]
 pub struct User {
     pub id: i32,                                   // Assuming id is INTEGER
-    pub clerk_id: String,                          // TEXT, optional
+    pub privy_id: String,                          // TEXT, optional
     pub email: String,                             // TEXT
     pub name: String,                              // TEXT
     pub user_pda: Option<String>,                  // Changed to Option<String>

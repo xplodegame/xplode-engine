@@ -3,6 +3,19 @@
 -- Make user_pda optional
 ALTER TABLE users 
 ALTER COLUMN user_pda DROP NOT NULL;
+-- Rename clerk_id column to privy_id in users table
+ALTER TABLE users
+RENAME COLUMN clerk_id TO privy_id;
+
+-- Add index for faster user lookup by privy_id
+CREATE INDEX idx_users_privy_id ON users(privy_id);
+
+-- Ensure privy_id is unique for each user
+ALTER TABLE users ADD CONSTRAINT unique_privy_id UNIQUE (privy_id);
+
+-- Remove clerk_id constraint and email constraint
+ALTER TABLE users DROP CONSTRAINT users_email_key;
+ALTER TABLE users DROP CONSTRAINT users_clerk_id_key;
 
 -- Add wallet type and address to wallet table
 ALTER TABLE wallet
