@@ -16,7 +16,7 @@ pub enum TxType {
     WITHDRAWAL,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum Network {
     SOLANA,
     MONAD,
@@ -28,15 +28,15 @@ pub enum WalletType {
     DIRECT,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct UserDetailsRequest {
     pub name: String,
     pub email: String,
-    pub clerk_id: String,
+    pub privy_id: String,
     pub wallet_address: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct DepositRequest {
     pub user_id: i32,
     pub amount: f64,
@@ -45,7 +45,7 @@ pub struct DepositRequest {
     pub tx_hash: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct WithdrawRequest {
     pub user_id: i32,
     pub amount: f64,

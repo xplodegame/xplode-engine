@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-deposits = {path = "../deposits"}
+#deposits = {path = "../deposits"}
 anchor-lang.workspace = true
 redis.workspace = true
 solana-sdk.workspace = true

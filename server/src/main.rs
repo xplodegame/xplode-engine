@@ -1,32 +1,11 @@
 use common::agg_mod;
-//use clap::{Parser, Subcommand};
-// use game::GameManager;
 use dotenv::dotenv;
 use game::GameServer;
-use std::net::SocketAddr;
 use tokio::task;
 use tracing::info;
 use warp::Filter;
 
-//mod macros;
-
 agg_mod!(board game player seed_gen);
-//
-//#[derive(Parser)]
-//#[clap(author, version, about, long_about = None)]
-//struct Cli {
-//    #[clap(subcommand)]
-//    command: Commands,
-//}
-
-//#[derive(Subcommand)]
-//enum Commands {
-//    // Server
-//    Server,
-//
-//    // Client
-//    Client,
-//}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

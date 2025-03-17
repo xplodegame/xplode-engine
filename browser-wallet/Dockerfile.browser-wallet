@@ -30,7 +30,7 @@ COPY --from=builder /app/target/release/browser-wallet /app/
 COPY --from=builder /app/.env* /app/
 
 # Expose the port the wallet server runs on
-EXPOSE 8081
+EXPOSE 8080
 
 # Set the command to run the wallet server
 CMD ["./browser-wallet"]

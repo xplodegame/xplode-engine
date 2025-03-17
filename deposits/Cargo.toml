@@ -3,15 +3,3 @@ name = "deposits"
 version = "0.1.0"
 edition = "2021"
 
-
-
-[dependencies]
-anchor-lang.workspace = true
-redis.workspace = true
-solana-sdk.workspace = true
-solana-client.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-dotenv.workspace = true
-tokio.workspace = true
-anyhow.workspace = true
