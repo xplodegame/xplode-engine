@@ -61,7 +61,7 @@ pub async fn create_user_and_wallet(
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(user.id)
-    .bind(Currency::SOL.to_string())
+    .bind(Currency::MON.to_string())
     .bind(0.0)
     .bind(wallet_type)
     .bind(wallet_address)
@@ -78,20 +78,24 @@ pub async fn update_player_balances(
     loser_idx: usize,
     single_bet_size: f64,
     winning_amount: f64,
-    network: Option<Network>,
+    currency: Currency,
 ) -> Result<()> {
+    info!("Updating player balances for user_ids: {:?}", user_ids);
     let mut tx = pool.begin().await?;
     // Default to SOLANA network if none is provided
-    let network = network.unwrap_or(Network::SOLANA);
+    let network = Network::MONAD;
     let network_str = network.to_string();
+    let currency_str = currency.to_string();
 
     for (i, user_id) in user_ids.iter().enumerate() {
+        info!("Currency: {:?}, user_id: {:?}", currency_str, user_id);
         let current_balance: f64 =
             sqlx::query_scalar("SELECT balance FROM wallet WHERE user_id = $1 AND currency = $2")
                 .bind(user_id)
-                .bind(Currency::SOL.to_string())
+                .bind(currency_str.clone())
                 .fetch_one(&mut *tx)
                 .await?;
+        info!("Current balance: {:?}", current_balance);
 
         let (new_balance, profit) = if i == loser_idx {
             (current_balance - single_bet_size, -single_bet_size)
@@ -105,7 +109,7 @@ pub async fn update_player_balances(
         )
         .bind(new_balance)
         .bind(user_id)
-        .bind(Currency::SOL.to_string())
+        .bind(currency_str.clone())
         .execute(&mut *tx)
         .await?;
 
@@ -122,6 +126,9 @@ async fn record_game_result_tx(
     network: &str,
     profit: f64,
 ) -> Result<()> {
+    info!("Recording game result for user_id: {:?}", user_id);
+    info!("Network: {:?}", network);
+    info!("Profit: {:?}", profit);
     sqlx::query("INSERT INTO game_pnl (user_id, network, profit) VALUES ($1, $2, $3)")
         .bind(user_id)
         .bind(network)

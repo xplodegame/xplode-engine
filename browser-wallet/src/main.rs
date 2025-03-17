@@ -12,6 +12,7 @@ use common::{
 use db::establish_connection;
 use dotenv::dotenv;
 
+use evm_deposits::transfer_funds;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
 use tracing::info;
@@ -23,12 +24,16 @@ async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    info!(
+        "Fetching or creating user with privy_id: {:?}",
+        req.privy_id
+    );
     let AppState { pool } = &**app_state;
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
     // Check if the user already exists
-    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE email = $1")
-        .bind(&req.email)
+    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE privy_id = $1")
+        .bind(&req.privy_id)
         .fetch_optional(&mut *tx)
         .await
         .expect("Error fetching user");
@@ -50,15 +55,15 @@ async fn fetch_or_create_user(
                 "currency": Currency::MON.to_string(),
                 "balance": wallet.balance,
                 "wallet_type": wallet.wallet_type,
-                "wallet_address": wallet.wallet_address
+                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
             }))
         }
         None => {
             // Create new user
             let created_user: User = sqlx::query_as(
-                "INSERT INTO users (clerk_id, email, name) VALUES ($1, $2, $3) RETURNING *",
+                "INSERT INTO users (privy_id, email, name) VALUES ($1, $2, $3) RETURNING *",
             )
-            .bind(&req.clerk_id)
+            .bind(&req.privy_id)
             .bind(&req.email)
             .bind(&req.name)
             .fetch_one(&mut *tx)
@@ -73,7 +78,7 @@ async fn fetch_or_create_user(
             .bind(Currency::MON.to_string())
             .bind(0.0)
             .bind(WalletType::DIRECT.to_string())
-            .bind(req.wallet_address.clone().unwrap())
+            .bind(req.wallet_address.clone().unwrap_or_else(|| "".to_string()))
             .fetch_one(&mut *tx)
             .await
             .expect("Failed to create wallet");
@@ -85,7 +90,7 @@ async fn fetch_or_create_user(
                 "currency": Currency::MON.to_string() ,
                 "balance": 0.0,
                 "wallet_type": WalletType::DIRECT.to_string(),
-                "wallet_address": wallet.wallet_address
+                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
             }))
         }
     }
@@ -145,6 +150,7 @@ async fn deposit(
     let AppState { pool } = &**app_state;
     let deposit_request = deposit_request.into_inner();
     info!("Deposit request arrived");
+    info!("Deposit request: {:?}", deposit_request);
 
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -215,6 +221,13 @@ async fn withdraw(
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
+    let tx_hash = match transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            return HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
+        }
+    };
+
     let new_balance = wallet.balance - withdraw_req.amount;
 
     // Update the user's wallet balance
@@ -228,12 +241,12 @@ async fn withdraw(
     .await
     .expect("Error updating wallet balance");
 
-    // Generate transaction hash for withdrawal
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let tx_hash = format!("withdraw_{}", timestamp);
+    // // Generate transaction hash for withdrawal
+    // let timestamp = SystemTime::now()
+    //     .duration_since(SystemTime::UNIX_EPOCH)
+    //     .unwrap()
+    //     .as_millis();
+    // let tx_hash = format!("withdraw_{}", timestamp);
 
     // Record the transaction
     sqlx::query(
@@ -277,7 +290,7 @@ async fn main() -> std::io::Result<()> {
     let pool = establish_connection().await;
     let app_state = web::Data::new(AppState { pool });
 
-    info!("Starting HTTP server on 0.0.0.0:8081");
+    info!("Starting HTTP server on 0.0.0.0:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
@@ -290,7 +303,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
     })
-    .bind("0.0.0.0:8081")?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }
