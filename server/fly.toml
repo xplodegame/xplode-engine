@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for mines-game007 on 2025-03-17T02:03:08+05:30
+# fly.toml app configuration file generated for mines-game007 on 2025-03-17T14:49:16+05:30
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -41,10 +41,22 @@ primary_region = 'bom'
     timeout = '2s'
     grace_period = '1s'
 
+[regions]
+primary = ["bom", "iad"]
+
 [[vm]]
+  count = 2
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+  region = "bom"
+
+[[vm]]
+  count = 2
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  region = "iad"
 
 [[metrics]]
   port = 9091
