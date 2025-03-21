@@ -4,7 +4,7 @@ use std::env;
 use tracing::info;
 
 use crate::{
-    models::{GamePnl, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{LeaderboardEntry, User, Wallet},
     utils::{Currency, Network},
 };
 

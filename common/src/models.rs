@@ -65,7 +65,7 @@ pub struct UserNetworkPnl {
 pub struct LeaderboardEntry {
     pub name: String,
     pub network: String,
-    pub games_played: i64,
+    pub games_played: i32,
     pub total_profit: f64,
     pub rank: i64,
 }
