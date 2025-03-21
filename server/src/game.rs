@@ -1,7 +1,7 @@
 use anyhow::Result;
 use common::{
     db::{self, establish_connection},
-    utils::{Currency, Network},
+    utils::Currency,
 };
 use futures_util::{
     lock::Mutex,
@@ -122,6 +122,7 @@ type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 impl GameRegistry {
     // Only save game state to Redis for critical state changes
     pub async fn save_game_state(&self, game_id: String, state: GameState) {
+        info!("*********************Saving game state to Redis*********************");
         // Don't block the main flow - fire and forget
         tokio::spawn({
             let redis = self.redis.clone();
@@ -130,9 +131,10 @@ impl GameRegistry {
 
             async move {
                 if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
-                    let _ = conn
+                    let res = conn
                         .set_ex::<String, String, ()>(game_id, state_json, 300)
                         .await;
+                    info!("Redis set_ex result: {:?}", res);
                 }
             }
         });
@@ -321,6 +323,48 @@ impl GameRegistry {
         }
         Ok(())
     }
+
+    // Add new cleanup method
+    pub async fn cleanup_player(&self, player_id: &str) {
+        // Remove from active players
+        let mut active_players_write = self.active_players.write().await;
+        active_players_write.remove(player_id);
+
+        // Check if player is in any WAITING games and clean those up
+        let mut games_write = self.games.write().await;
+        let mut games_to_abort = Vec::new();
+
+        for (game_id, state) in games_write.iter() {
+            if let GameState::WAITING { creator, .. } = state {
+                if creator.id == player_id {
+                    games_to_abort.push(game_id.clone());
+                }
+            }
+        }
+
+        // Abort any WAITING games where this player was the creator
+        for game_id in games_to_abort {
+            let aborted_state = GameState::ABORTED {
+                game_id: game_id.clone(),
+            };
+            games_write.insert(game_id.clone(), aborted_state.clone());
+
+            // Clean up in Redis asynchronously
+            tokio::spawn({
+                let redis = self.redis.clone();
+                let game_id = game_id.clone();
+                let state_json = serde_json::to_string(&aborted_state).unwrap();
+
+                async move {
+                    if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                        let _ = conn
+                            .set_ex::<String, String, ()>(game_id, state_json, 300)
+                            .await;
+                    }
+                }
+            });
+        }
+    }
 }
 
 pub struct GameServer {
@@ -331,6 +375,7 @@ pub struct GameServer {
 impl GameServer {
     pub async fn new() -> Self {
         let redis_url = env::var("REDIS_URL").unwrap();
+        info!("Redis URL: {}", redis_url);
         let redis_client = Client::open(redis_url).unwrap();
 
         Self {
@@ -354,7 +399,6 @@ impl GameServer {
             let registry = self.registry.clone();
             let server_id = self.server_id.clone();
 
-            // let tx = tx.clone();
             tokio::spawn(async move {
                 info!("Establishing connection");
                 if let Err(e) = GameServer::handle_connection(server_id, registry, stream).await {
@@ -373,8 +417,6 @@ impl GameServer {
     ) -> anyhow::Result<()> {
         let ws_stream = ServerBuilder::new().accept(stream).await?;
         let pool = establish_connection().await;
-        // ✅ Each client gets its own Receiver
-        // let mut broadcast_rx = broadcast_tx.subscribe();
 
         let (ws_write, mut ws_read) = ws_stream.split();
 
@@ -384,9 +426,14 @@ impl GameServer {
         let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(500);
         let server_tx = Arc::new(server_tx);
 
+        // Keep track of the current player_id for cleanup
+        let current_player_id = Arc::new(RwLock::new(String::new()));
+        let registry_clone = registry.clone();
+
         // Spawn a task to handle incoming WebSocket messages
-        tokio::spawn({
+        let _ = tokio::spawn({
             let server_tx = server_tx.clone();
+            let current_player_id = current_player_id.clone();
             async move {
                 while let Some(msg) = ws_read.next().await {
                     info!("Incoming msg");
@@ -394,10 +441,19 @@ impl GameServer {
 
                     match msg {
                         Ok(message) => {
+                            let current_player_id = current_player_id.clone();
                             tokio::spawn(async move {
                                 match serde_json::from_slice(message.as_payload()) {
                                     Ok(game_msg) => {
                                         info!("msg: {:?}", game_msg);
+                                        // Update current_player_id if this is a Play or Join message
+                                        if let GameMessage::Play { player_id, .. } = &game_msg {
+                                            *current_player_id.write().await = player_id.clone();
+                                        } else if let GameMessage::Join { player_id, .. } =
+                                            &game_msg
+                                        {
+                                            *current_player_id.write().await = player_id.clone();
+                                        }
                                         if let Err(e) = server_tx_inner.send(game_msg).await {
                                             eprintln!("Error sending message: {}", e);
                                         }
@@ -410,8 +466,15 @@ impl GameServer {
                         }
                         Err(e) => {
                             eprintln!("WebSocket error: {}", e);
+                            break;
                         }
                     }
+                }
+
+                // WebSocket connection closed - clean up the player
+                let player_id = current_player_id.read().await.clone();
+                if !player_id.is_empty() {
+                    registry_clone.cleanup_player(&player_id).await;
                 }
             }
         });
