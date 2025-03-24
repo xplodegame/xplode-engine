@@ -1,5 +1,5 @@
 use anyhow::Result;
-use redis::{aio::MultiplexedConnection, AsyncCommands, Pipeline};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::{env, time::Instant};
 use tracing::{info, warn};
@@ -97,44 +97,60 @@ impl DiscoveryService {
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let conn_time = start.elapsed();
 
-        // First try preferred region if specified
-        let mut game_id: Option<String> = None;
-        let region_search_start = Instant::now();
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+
+        // Add both regional and global search commands to pipeline
+        let has_region = preferred_region.is_some();
         if let Some(region) = preferred_region.as_ref() {
-            let region_matchmaking_key = format!(
+            let key = format!(
                 "region_matchmaking:{}:{}:{}",
                 region, single_bet_size, min_players
             );
-            game_id = conn.srandmember(&region_matchmaking_key).await?;
+            pipe.srandmember(&key);
         }
-        let region_search_time = region_search_start.elapsed();
 
-        // If no game found in preferred region, try global pool
-        let global_search_start = Instant::now();
-        let mut global_search_time = global_search_start.elapsed();
-        if game_id.is_none() {
-            let matchmaking_key = format!("matchmaking:{}:{}", single_bet_size, min_players);
-            game_id = conn.srandmember(&matchmaking_key).await?;
-            global_search_time = global_search_start.elapsed();
-        }
+        let global_matchmaking_key = format!("matchmaking:{}:{}", single_bet_size, min_players);
+        pipe.srandmember(&global_matchmaking_key);
+
+        // Execute pipeline to get game IDs
+        let pipeline_start = Instant::now();
+        let game_ids: Vec<Option<String>> = pipe.query_async(&mut conn).await?;
+        let pipeline_time = pipeline_start.elapsed();
+
+        // Properly handle priority - if we have a region, first ID is regional, second is global
+        // If no region specified, we only have global result
+        let game_id = if has_region {
+            match &game_ids[..] {
+                [Some(regional), _] => Some(regional.clone()), // Use regional if available
+                [None, global] => global.clone(), // Fall back to global if regional empty
+                _ => None,                        // Handle unexpected cases
+            }
+        } else {
+            // No region specified, just use the global result
+            game_ids.get(0).and_then(|x| x.clone())
+        };
 
         // If we found a game, get its session info
         let session_fetch_start = Instant::now();
-
         let result = if let Some(game_id) = game_id.as_ref() {
             let key = format!("game_session:{}", game_id);
-            let values: Option<Vec<String>> = conn
-                .hget(
-                    &key,
-                    &[
-                        "region",
-                        "server_id",
-                        "single_bet_size",
-                        "min_players",
-                        "current_players",
-                    ],
-                )
-                .await?;
+
+            // Create another pipeline for fetching session info
+            let mut pipe = redis::pipe();
+            pipe.atomic();
+            pipe.hget(
+                &key,
+                &[
+                    "region",
+                    "server_id",
+                    "single_bet_size",
+                    "min_players",
+                    "current_players",
+                ],
+            );
+
+            let values: Option<Vec<String>> = pipe.query_async(&mut conn).await?;
 
             if let Some(values) = values {
                 if values.len() == 5 {
@@ -170,8 +186,7 @@ impl DiscoveryService {
             bet_size = %single_bet_size,
             min_players = %min_players,
             conn_latency_ms = %conn_time.as_millis(),
-            region_search_latency_ms = %region_search_time.as_millis(),
-            global_search_latency_ms = %global_search_time.as_millis(),
+            pipeline_latency_ms = %pipeline_time.as_millis(),
             session_fetch_latency_ms = %session_fetch_time.as_millis(),
             total_latency_ms = %total_time.as_millis(),
             "Find game session completed"

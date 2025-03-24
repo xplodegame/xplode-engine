@@ -9,7 +9,7 @@ use futures_util::{
     SinkExt,
 };
 
-use redis::{AsyncCommands, Client};
+use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -120,7 +120,7 @@ pub struct GameRegistry {
     active_players: Arc<RwLock<HashSet<String>>>,
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
-    redis: redis::Client,
+    // redis: redis::Client,
     discovery: DiscoveryService,
     server_id: String,
 }
@@ -134,7 +134,7 @@ impl GameRegistry {
             active_players: Arc::new(RwLock::new(HashSet::new())),
             game_channels: Arc::new(RwLock::new(HashMap::new())),
             broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
-            redis: redis.clone(),
+            // redis: redis.clone(),
             discovery: DiscoveryService::new(redis),
             server_id,
         }
