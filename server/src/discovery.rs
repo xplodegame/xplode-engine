@@ -93,6 +93,7 @@ impl DiscoveryService {
         min_players: u32,
         preferred_region: Option<String>,
     ) -> Result<Option<GameSession>> {
+        info!("Finding game session");
         let start = Instant::now();
         let mut conn = self.redis.get_multiplexed_async_connection().await?;
         let conn_time = start.elapsed();
@@ -117,6 +118,7 @@ impl DiscoveryService {
         let pipeline_start = Instant::now();
         let game_ids: Vec<Option<String>> = pipe.query_async(&mut conn).await?;
         let pipeline_time = pipeline_start.elapsed();
+        info!("Here 1");
 
         // Properly handle priority - if we have a region, first ID is regional, second is global
         // If no region specified, we only have global result
@@ -131,26 +133,32 @@ impl DiscoveryService {
             game_ids.get(0).and_then(|x| x.clone())
         };
 
+        info!("Here 2");
+
         // If we found a game, get its session info
         let session_fetch_start = Instant::now();
         let result = if let Some(game_id) = game_id.as_ref() {
+            info!("Here 2.1");
             let key = format!("game_session:{}", game_id);
+            info!("Key: {}", key);
 
-            // Create another pipeline for fetching session info
-            let mut pipe = redis::pipe();
-            pipe.atomic();
-            pipe.hget(
-                &key,
-                &[
-                    "region",
-                    "server_id",
-                    "single_bet_size",
-                    "min_players",
-                    "current_players",
-                ],
-            );
+            // Change this line to handle the pipeline response correctly
+            let values: Option<Vec<String>> = conn
+                .hget(
+                    &key,
+                    &[
+                        "region",
+                        "server_id",
+                        "single_bet_size",
+                        "min_players",
+                        "current_players",
+                    ],
+                )
+                .await?;
 
-            let values: Option<Vec<String>> = pipe.query_async(&mut conn).await?;
+            info!("Values: {:?}", values);
+
+            info!("Here 3");
 
             if let Some(values) = values {
                 if values.len() == 5 {
