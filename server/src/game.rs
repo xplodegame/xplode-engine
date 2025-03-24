@@ -857,6 +857,7 @@ impl GameServer {
                                 } else {
                                     // Not needed here as they will be updated in lock complete
                                     // *turn_idx = (*turn_idx + 1) % players.len();
+                                    info!("Setting locks to None, befor locks value: {:?}", *locks);
                                     *locks = None;
                                 }
 
