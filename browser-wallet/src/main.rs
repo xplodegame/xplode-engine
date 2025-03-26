@@ -53,6 +53,7 @@ async fn fetch_or_create_user(
             HttpResponse::Ok().json(json!({
                 "id": user.id,
                 "currency": Currency::MON.to_string(),
+                "name": user.name,
                 "balance": wallet.balance,
                 "wallet_type": wallet.wallet_type,
                 "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
@@ -93,6 +94,44 @@ async fn fetch_or_create_user(
                 "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
             }))
         }
+    }
+}
+
+#[actix_web::post("/user-details/{user_id}")]
+async fn update_user_details(
+    path: web::Path<i32>,
+    req: web::Json<UserDetailsRequest>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    let user_id = path.into_inner();
+    let AppState { pool } = &**app_state;
+
+    let mut tx = pool.begin().await.expect("Failed to start transaction");
+
+    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("Error fetching user");
+
+    match existing_user {
+        Some(_) => {
+            sqlx::query(
+                "UPDATE users SET name = $1, email = $2, wallet_address = $3 WHERE id = $4",
+            )
+            .bind(req.name.clone())
+            .bind(req.email.clone())
+            .bind(req.wallet_address.clone().unwrap_or_else(|| "".to_string()))
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .expect("Error updating user details");
+
+            tx.commit().await.expect("Failed to commit transaction");
+
+            HttpResponse::Ok().body("User details updated successfully")
+        }
+        None => HttpResponse::NotFound().body("User not found"),
     }
 }
 
@@ -302,6 +341,7 @@ async fn main() -> std::io::Result<()> {
             .service(fetch_or_create_user)
             .service(get_user_stats)
             .service(get_leaderboard)
+            .service(update_user_details)
     })
     .bind("0.0.0.0:8080")?
     .run()
