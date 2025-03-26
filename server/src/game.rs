@@ -69,6 +69,7 @@ pub enum GameState {
 pub enum GameMessage {
     Play {
         player_id: String,
+        name: String,
         single_bet_size: f64,
         min_players: u32,
         bombs: u32,
@@ -77,6 +78,7 @@ pub enum GameMessage {
     Join {
         game_id: String,
         player_id: String,
+        name: String,
     },
     MakeMove {
         game_id: String,
@@ -247,6 +249,7 @@ impl GameRegistry {
     async fn handle_play_message(
         &self,
         player_id: String,
+        name: String,
         single_bet_size: f64,
         min_players: u32,
         bombs: u32,
@@ -286,7 +289,7 @@ impl GameRegistry {
                     mut players,
                 }) = state
                 {
-                    let player = Player::new(player_id.clone());
+                    let player = Player::new(player_id.clone(), name.clone());
                     players.push(player);
 
                     // Update player count in Redis
@@ -330,7 +333,7 @@ impl GameRegistry {
         // Create new game if no suitable session found
         let game_id = Uuid::new_v4().to_string();
         let board = Board::new(grid as usize, bombs as usize);
-        let player = Player::new(player_id.clone());
+        let player = Player::new(player_id.clone(), name.clone());
 
         let game_state = GameState::WAITING {
             game_id: game_id.clone(),
@@ -494,6 +497,7 @@ impl GameServer {
                 }
                 GameMessage::Play {
                     player_id,
+                    name,
                     single_bet_size,
                     min_players,
                     bombs,
@@ -518,6 +522,7 @@ impl GameServer {
                     match registry
                         .handle_play_message(
                             player_id.clone(),
+                            name.clone(),
                             single_bet_size,
                             min_players,
                             bombs,
@@ -598,7 +603,11 @@ impl GameServer {
                         }
                     }
                 }
-                GameMessage::Join { game_id, player_id } => {
+                GameMessage::Join {
+                    game_id,
+                    player_id,
+                    name,
+                } => {
                     info!("Request to join:: {:?} game", game_id);
 
                     // let games_read = registry.games.read().await;
@@ -613,7 +622,7 @@ impl GameServer {
                         players,
                     }) = game_state
                     {
-                        let new_player = Player::new(player_id.clone());
+                        let new_player = Player::new(player_id.clone(), name.clone());
                         let mut players = players.clone();
                         players.push(new_player);
 
