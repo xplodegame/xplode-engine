@@ -103,9 +103,7 @@ pub enum GameMessage {
     Error(String),
     RedirectToServer {
         game_id: String,
-        server_id: String,
-        region: String,
-        redirect_url: String,
+        machine_id: String,
     },
 }
 
@@ -262,10 +260,10 @@ impl GameRegistry {
         drop(active_players_read);
 
         // Try to find an existing game session through discovery service
-        let current_region = env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string());
+        // let current_region = env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string());
         if let Some(session) = self
             .discovery
-            .find_game_session(single_bet_size, min_players, Some(current_region))
+            .find_game_session(single_bet_size, min_players)
             .await?
         {
             // If the session is on this server, get it from local state
@@ -346,8 +344,7 @@ impl GameRegistry {
         // Register the new game session
         let session = GameSession {
             game_id: game_id.clone(),
-            region: env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string()),
-            server_id: self.server_id.clone(),
+            server_id: env::var("FLY_MACHINE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string()),
             single_bet_size,
             min_players,
             current_players: 1,
@@ -372,7 +369,7 @@ impl GameServer {
         let redis_url = env::var("REDIS_URL").unwrap();
         info!("Redis URL: {}", redis_url);
         let redis_client = Client::open(redis_url).unwrap();
-        let server_id = Uuid::new_v4().to_string();
+        let server_id = env::var("FLY_MACHINE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
 
         Self {
             server_id: server_id.clone(),
@@ -471,6 +468,10 @@ impl GameServer {
         while let Some(message) = server_rx.recv().await {
             match message {
                 GameMessage::Ping { game_id, player_id } => {
+                    let machine_id =
+                        env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "unknown".to_string());
+                    info!("Pong sent from {}", machine_id);
+                    info!("Pong set from {}", server_id);
                     if let Some(game_id) = game_id {
                         registry
                             .subscribe_to_channel(server_id.clone(), game_id, ws_write.clone())
@@ -498,7 +499,7 @@ impl GameServer {
                     bombs,
                     grid,
                 } => {
-                    info!("Play request");
+                    info!("Play request at machine: {}", server_id);
                     let active_players_read = registry.active_players.read().await;
 
                     if active_players_read.contains(&player_id) {
@@ -564,19 +565,12 @@ impl GameServer {
                             // Game exists on another server, send redirect message
                             if let Some(session) = registry
                                 .discovery
-                                .find_game_session(single_bet_size, min_players, None)
+                                .find_game_session(single_bet_size, min_players)
                                 .await?
                             {
-                                let app_name = env::var("FLY_APP_NAME")
-                                    .unwrap_or_else(|_| "mines-game007".to_string());
-                                let redirect_url =
-                                    format!("wss://{}.{}.fly.dev", app_name, session.region);
-
                                 let redirect = GameMessage::RedirectToServer {
                                     game_id: session.game_id,
-                                    server_id: session.server_id,
-                                    region: session.region,
-                                    redirect_url,
+                                    machine_id: session.server_id,
                                 };
                                 ws_write
                                     .lock()
@@ -990,16 +984,13 @@ impl GameServer {
                 }
                 GameMessage::RedirectToServer {
                     game_id,
-                    server_id,
-                    region,
-                    redirect_url,
+                    machine_id,
                 } => {
+                    unreachable!("Should fail if execution enters here");
                     // Send the redirect message to the client
                     let redirect = GameMessage::RedirectToServer {
                         game_id,
-                        server_id,
-                        region,
-                        redirect_url,
+                        machine_id,
                     };
                     if let Err(e) = ws_write
                         .lock()
