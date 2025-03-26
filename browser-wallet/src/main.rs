@@ -6,7 +6,8 @@ use common::{
     db,
     models::{self, LeaderboardEntry, User, UserNetworkPnl, Wallet},
     utils::{
-        self, Currency, DepositRequest, Network, UserDetailsRequest, WalletType, WithdrawRequest,
+        self, Currency, DepositRequest, Network, UpdateUserDetailsRequest, UserDetailsRequest,
+        WalletType, WithdrawRequest,
     },
 };
 use db::establish_connection;
@@ -100,7 +101,7 @@ async fn fetch_or_create_user(
 #[actix_web::post("/user-details/{user_id}")]
 async fn update_user_details(
     path: web::Path<i32>,
-    req: web::Json<UserDetailsRequest>,
+    req: web::Json<UpdateUserDetailsRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
     let user_id = path.into_inner();
@@ -115,17 +116,14 @@ async fn update_user_details(
         .expect("Error fetching user");
 
     match existing_user {
-        Some(_) => {
-            sqlx::query(
-                "UPDATE users SET name = $1, email = $2, wallet_address = $3 WHERE id = $4",
-            )
-            .bind(req.name.clone())
-            .bind(req.email.clone())
-            .bind(req.wallet_address.clone().unwrap_or_else(|| "".to_string()))
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .expect("Error updating user details");
+        Some(user) => {
+            sqlx::query("UPDATE users SET name = $1, email = $2 WHERE id = $3")
+                .bind(req.name.clone().unwrap_or(user.name))
+                .bind(req.email.clone().unwrap_or(user.email))
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .expect("Error updating user details");
 
             tx.commit().await.expect("Failed to commit transaction");
 
