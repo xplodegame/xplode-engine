@@ -24,9 +24,7 @@ ADD COLUMN wallet_address TEXT;
 
 -- Enhance transactions table
 ALTER TABLE transactions
-ADD COLUMN wallet_id INTEGER REFERENCES wallet(id),
-ADD COLUMN status TEXT NOT NULL DEFAULT 'pending',
-ADD COLUMN network TEXT NOT NULL DEFAULT 'solana';
+ADD COLUMN wallet_id INTEGER REFERENCES wallet(id);
 
 -- Add index for faster wallet-based transaction queries
 CREATE INDEX idx_transactions_wallet_id ON transactions(wallet_id);

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use common::{
     db::{self, establish_connection},
-    utils::{Currency, Network},
+    utils::Currency,
 };
 use futures_util::{
     lock::Mutex,
@@ -9,7 +9,7 @@ use futures_util::{
     SinkExt,
 };
 
-use redis::{AsyncCommands, Client};
+use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -28,7 +28,11 @@ use tracing::info;
 
 use uuid::Uuid;
 
-use crate::{board::Board, player::Player};
+use crate::{
+    board::Board,
+    discovery::{DiscoveryService, GameSession},
+    player::Player,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameState {
@@ -65,6 +69,7 @@ pub enum GameState {
 pub enum GameMessage {
     Play {
         player_id: String,
+        name: String,
         single_bet_size: f64,
         min_players: u32,
         bombs: u32,
@@ -73,6 +78,7 @@ pub enum GameMessage {
     Join {
         game_id: String,
         player_id: String,
+        name: String,
     },
     MakeMove {
         game_id: String,
@@ -97,6 +103,10 @@ pub enum GameMessage {
     },
     GameUpdate(GameState),
     Error(String),
+    RedirectToServer {
+        game_id: String,
+        machine_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,181 +118,75 @@ pub struct GameMessageWrapper {
 pub struct GameRegistry {
     games: Arc<RwLock<HashMap<String, GameState>>>,
     active_players: Arc<RwLock<HashSet<String>>>,
-    // Fixme: Take care of this Arc
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
-    // player_streams: Arc<
-    //     RwLock<HashMap<String, Vec<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>>>,
-    // >,
-    redis: redis::Client,
+    // redis: redis::Client,
+    discovery: DiscoveryService,
+    server_id: String,
 }
 
 type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 impl GameRegistry {
-    // Only save game state to Redis for critical state changes
+    pub fn new(redis: redis::Client, server_id: String) -> Self {
+        Self {
+            games: Arc::new(RwLock::new(HashMap::new())),
+            active_players: Arc::new(RwLock::new(HashSet::new())),
+            game_channels: Arc::new(RwLock::new(HashMap::new())),
+            broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
+            // redis: redis.clone(),
+            discovery: DiscoveryService::new(redis),
+            server_id,
+        }
+    }
+
     pub async fn save_game_state(&self, game_id: String, state: GameState) {
-        // Don't block the main flow - fire and forget
-        tokio::spawn({
-            let redis = self.redis.clone();
-            let game_id = game_id.clone();
-            let state_json = serde_json::to_string(&state).unwrap();
-
-            async move {
-                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
-                    let _ = conn
-                        .set_ex::<String, String, ()>(game_id, state_json, 300)
-                        .await;
-                }
+        match &state {
+            GameState::RUNNING { players, .. } => {
+                // Update discovery service with current player count
+                let _ = self
+                    .discovery
+                    .update_player_count(&game_id, players.len() as u32)
+                    .await;
             }
-        });
-    }
-
-    // Only load game states from Redis during startup or when absolutely needed
-    pub async fn load_game_state(&self) {
-        let mut conn = match self.redis.get_multiplexed_async_connection().await {
-            Ok(conn) => conn,
-            Err(_) => return, // Fail silently and rely on in-memory state
-        };
-
-        let keys: Vec<String> = match conn.keys("*").await {
-            Ok(keys) => keys,
-            Err(_) => return,
-        };
-
-        for key in keys {
-            if let Ok(state) = conn.get::<_, String>(key.clone()).await {
-                if let Ok(game_state) = serde_json::from_str::<GameState>(&state) {
-                    self.games.write().await.insert(key, game_state);
-                }
+            GameState::FINISHED { .. } | GameState::ABORTED { .. } => {
+                // Remove from discovery when game ends
+                let _ = self.discovery.remove_game_session(&game_id).await;
             }
+            _ => {}
         }
     }
 
-    // Prioritize in-memory state, only fall back to Redis when necessary
     pub async fn get_game_state(&self, game_id: &str) -> Option<GameState> {
-        // First check in-memory cache
+        // Only check in-memory state since we don't store in Redis anymore
         let games_read = self.games.read().await;
-        if let Some(state) = games_read.get(game_id) {
-            return Some(state.clone());
-        }
-        drop(games_read);
-
-        // Only if not in memory, try Redis once
-        let mut conn = match self.redis.get_multiplexed_async_connection().await {
-            Ok(conn) => conn,
-            Err(_) => return None,
-        };
-
-        let redis_value: Option<String> = redis::cmd("GET")
-            .arg(game_id)
-            .query_async(&mut conn)
-            .await
-            .ok();
-
-        if let Some(state_json) = redis_value {
-            if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
-                // Update in-memory cache
-                self.games
-                    .write()
-                    .await
-                    .insert(game_id.to_string(), game_state.clone());
-                return Some(game_state);
-            }
-        }
-        None
+        games_read.get(game_id).cloned()
     }
 
-    // Only load from Redis if absolutely necessary
-    pub async fn load_game_if_absent(&self, game_id: &str) {
-        // Check if already in memory first
-        let games_read = self.games.read().await;
-        if games_read.get(game_id).is_some() {
-            return;
-        }
-        drop(games_read);
-
-        // Only try Redis once
-        let mut conn = match self.redis.get_multiplexed_async_connection().await {
-            Ok(conn) => conn,
-            Err(_) => return,
-        };
-
-        let redis_value: Option<String> = redis::cmd("GET")
-            .arg(game_id)
-            .query_async(&mut conn)
-            .await
-            .ok();
-
-        if let Some(state_json) = redis_value {
-            if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
-                self.games
-                    .write()
-                    .await
-                    .insert(game_id.to_string(), game_state);
-            }
-        }
-    }
-
+    // This is still needed for real-time game updates between players
     pub async fn subscribe_to_channel(
         &self,
-        server_id: String,
+        _server_id: String, // Not needed anymore since we're local only
         channel: String,
         ws_write: Arc<Mutex<WebSocketSink>>,
     ) -> Result<()> {
-        info!("SUbscribed to channel: {:?}", channel);
-        // Channel name should only rely on game_id
+        info!("Subscribing to channel: {:?}", channel);
         let mut broadcast_channels = self.broadcast_channels.write().await;
 
+        // Create a new broadcast channel if it doesn't exist
         if broadcast_channels.get(&channel).is_none() {
             let (tx, _rx) = broadcast::channel(100);
-            broadcast_channels.insert(channel.clone(), tx.clone());
-            info!("Inserting into broadcast channel");
-
-            // Spawn a single Redis subscription for this game_id
-            let redis_client = self.redis.clone();
-
-            let tx_clone = tx.clone();
-            let registry_clone = self.clone();
-
-            let channel = channel.clone();
-            tokio::spawn(async move {
-                let mut pubsub = redis_client.get_async_pubsub().await.unwrap();
-                pubsub.subscribe(&channel).await.unwrap();
-                let mut stream = pubsub.on_message();
-
-                while let Some(msg) = stream.next().await {
-                    if let Ok(payload) = msg.get_payload::<String>() {
-                        if let Ok(game_message_wrapper) =
-                            serde_json::from_str::<GameMessageWrapper>(&payload)
-                        {
-                            // Do not broadcast if it is from the same server id
-                            if game_message_wrapper.server_id != server_id {
-                                // Broadcast Redis message to all local clients
-                                let _ = tx_clone.send(game_message_wrapper.game_message.clone());
-
-                                // Re-publish to Redis for redundancy
-                                registry_clone
-                                    .publish_message(channel.clone(), game_message_wrapper, true)
-                                    .await?;
-                            }
-                        }
-                    }
-                }
-                anyhow::Ok(())
-            });
+            broadcast_channels.insert(channel.clone(), tx);
         }
-        info!("################Broadcasting now\n");
+
+        // Get the sender and create a new receiver
         let broadcast_tx = broadcast_channels.get(&channel).unwrap();
         let mut broadcast_rx = broadcast_tx.subscribe();
+        drop(broadcast_channels); // Release the write lock
 
-        info!(
-            "broadcast_tx.receiver_count(): {}",
-            broadcast_tx.receiver_count()
-        );
+        // Spawn a task to forward messages to this client's WebSocket
         tokio::spawn(async move {
             while let Ok(game_message) = broadcast_rx.recv().await {
-                info!("Got broadcast message");
                 let mut ws_sink = ws_write.lock().await;
                 if ws_sink
                     .send(Message::binary(serde_json::to_vec(&game_message).unwrap()))
@@ -290,36 +194,171 @@ impl GameRegistry {
                     .is_err()
                 {
                     eprintln!("Player disconnected");
+                    break; // Exit the loop if client disconnects
                 }
             }
         });
+
         Ok(())
     }
 
-    // ✅ Publish messages using multiplexed connection
+    // Simplified publish method for local broadcasting only
     pub async fn publish_message(
         &self,
-        channel: String, // channel == game_id
+        channel: String,
         game_message_wrapper: GameMessageWrapper,
-        from_redis: bool,
+        _from_redis: bool, // Not needed anymore since we're local only
     ) -> Result<()> {
-        info!("***********publishing message***********");
-        // Send to local clients
-        if let Some(channel) = self.broadcast_channels.read().await.get(&channel) {
-            let _ = channel.send(game_message_wrapper.game_message.clone());
-        }
-
-        // Publish to Redis only if not from Redis
-        if !from_redis {
-            info!("Publishing to Redis");
-            let mut conn = self.redis.get_multiplexed_async_connection().await.unwrap();
-            conn.publish::<String, String, ()>(
-                channel,
-                serde_json::to_string(&game_message_wrapper).unwrap(),
-            )
-            .await?;
+        if let Some(broadcast_tx) = self.broadcast_channels.read().await.get(&channel) {
+            let _ = broadcast_tx.send(game_message_wrapper.game_message);
         }
         Ok(())
+    }
+
+    // Add new cleanup method
+    pub async fn cleanup_player(&self, player_id: &str) {
+        // Remove from active players
+        let mut active_players_write = self.active_players.write().await;
+        active_players_write.remove(player_id);
+
+        // Check if player is in any WAITING games and clean those up
+        let mut games_write = self.games.write().await;
+        let mut games_to_abort = Vec::new();
+
+        for (game_id, state) in games_write.iter() {
+            if let GameState::WAITING { creator, .. } = state {
+                if creator.id == player_id {
+                    games_to_abort.push(game_id.clone());
+                }
+            }
+        }
+
+        // Abort any WAITING games where this player was the creator
+        for game_id in games_to_abort {
+            let aborted_state = GameState::ABORTED {
+                game_id: game_id.clone(),
+            };
+            games_write.insert(game_id.clone(), aborted_state);
+
+            // Only remove from discovery service, no need to save state
+            let _ = self.discovery.remove_game_session(&game_id).await;
+        }
+    }
+
+    // Modify the matchmaking logic in handle_play_message
+    async fn handle_play_message(
+        &self,
+        player_id: String,
+        name: String,
+        single_bet_size: f64,
+        min_players: u32,
+        bombs: u32,
+        grid: u32,
+    ) -> Result<Option<GameState>> {
+        // First check if player is already in a game
+        let active_players_read = self.active_players.read().await;
+        if active_players_read.contains(&player_id) {
+            return Ok(None);
+        }
+        drop(active_players_read);
+
+        // Try to find an existing game session through discovery service
+        // let current_region = env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string());
+        if let Some(session) = self
+            .discovery
+            .find_game_session(single_bet_size, min_players)
+            .await?
+        {
+            // If the session is on this server, get it from local state
+            if session.server_id == self.server_id {
+                let state = {
+                    let games_read = self.games.read().await;
+                    if let Some(state) = games_read.get(&session.game_id) {
+                        Some(state.clone())
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(GameState::WAITING {
+                    game_id,
+                    creator,
+                    board,
+                    single_bet_size,
+                    min_players,
+                    mut players,
+                }) = state
+                {
+                    let player = Player::new(player_id.clone(), name.clone());
+                    players.push(player);
+
+                    // Update player count in Redis
+                    self.discovery
+                        .update_player_count(&game_id, players.len() as u32)
+                        .await?;
+
+                    let new_state = if players.len() < min_players as usize {
+                        GameState::WAITING {
+                            game_id: game_id.clone(),
+                            creator,
+                            board,
+                            single_bet_size,
+                            min_players,
+                            players,
+                        }
+                    } else {
+                        // Game is transitioning to RUNNING state
+                        // Remove from discovery since it's no longer accepting players
+                        self.discovery.remove_game_session(&game_id).await?;
+
+                        GameState::RUNNING {
+                            game_id: game_id.clone(),
+                            players,
+                            board,
+                            turn_idx: 0,
+                            single_bet_size,
+                            locks: None,
+                        }
+                    };
+
+                    let mut games_write = self.games.write().await;
+                    games_write.insert(game_id.clone(), new_state.clone());
+                    return Ok(Some(new_state));
+                }
+            }
+            // If session is on another server, return None - client should reconnect to that server
+            return Ok(None);
+        }
+
+        // Create new game if no suitable session found
+        let game_id = Uuid::new_v4().to_string();
+        let board = Board::new(grid as usize, bombs as usize);
+        let player = Player::new(player_id.clone(), name.clone());
+
+        let game_state = GameState::WAITING {
+            game_id: game_id.clone(),
+            creator: player.clone(),
+            board,
+            single_bet_size,
+            min_players,
+            players: vec![player.clone()],
+        };
+
+        // Register the new game session
+        let session = GameSession {
+            game_id: game_id.clone(),
+            server_id: self.server_id.clone(),
+            single_bet_size,
+            min_players,
+            current_players: 1,
+        };
+        self.discovery.register_game_session(session).await?;
+
+        // Store in local state
+        let mut games_write = self.games.write().await;
+        games_write.insert(game_id.clone(), game_state.clone());
+
+        Ok(Some(game_state))
     }
 }
 
@@ -331,18 +370,13 @@ pub struct GameServer {
 impl GameServer {
     pub async fn new() -> Self {
         let redis_url = env::var("REDIS_URL").unwrap();
+        info!("Redis URL: {}", redis_url);
         let redis_client = Client::open(redis_url).unwrap();
+        let server_id = env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "LocalServer".to_string());
 
         Self {
-            server_id: Uuid::new_v4().to_string(),
-            registry: GameRegistry {
-                games: Arc::new(RwLock::new(HashMap::new())),
-                active_players: Arc::new(RwLock::new(HashSet::new())),
-                game_channels: Arc::new(RwLock::new(HashMap::new())),
-                broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
-                // player_streams: Arc::new(RwLock::new(HashMap::new())),
-                redis: redis_client,
-            },
+            server_id: server_id.clone(),
+            registry: GameRegistry::new(redis_client, server_id),
         }
     }
 
@@ -354,7 +388,6 @@ impl GameServer {
             let registry = self.registry.clone();
             let server_id = self.server_id.clone();
 
-            // let tx = tx.clone();
             tokio::spawn(async move {
                 info!("Establishing connection");
                 if let Err(e) = GameServer::handle_connection(server_id, registry, stream).await {
@@ -373,8 +406,6 @@ impl GameServer {
     ) -> anyhow::Result<()> {
         let ws_stream = ServerBuilder::new().accept(stream).await?;
         let pool = establish_connection().await;
-        // ✅ Each client gets its own Receiver
-        // let mut broadcast_rx = broadcast_tx.subscribe();
 
         let (ws_write, mut ws_read) = ws_stream.split();
 
@@ -384,9 +415,14 @@ impl GameServer {
         let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(500);
         let server_tx = Arc::new(server_tx);
 
+        // Keep track of the current player_id for cleanup
+        let current_player_id = Arc::new(RwLock::new(String::new()));
+        let registry_clone = registry.clone();
+
         // Spawn a task to handle incoming WebSocket messages
-        tokio::spawn({
+        let _ = tokio::spawn({
             let server_tx = server_tx.clone();
+            let current_player_id = current_player_id.clone();
             async move {
                 while let Some(msg) = ws_read.next().await {
                     info!("Incoming msg");
@@ -394,10 +430,19 @@ impl GameServer {
 
                     match msg {
                         Ok(message) => {
+                            let current_player_id = current_player_id.clone();
                             tokio::spawn(async move {
                                 match serde_json::from_slice(message.as_payload()) {
                                     Ok(game_msg) => {
                                         info!("msg: {:?}", game_msg);
+                                        // Update current_player_id if this is a Play or Join message
+                                        if let GameMessage::Play { player_id, .. } = &game_msg {
+                                            *current_player_id.write().await = player_id.clone();
+                                        } else if let GameMessage::Join { player_id, .. } =
+                                            &game_msg
+                                        {
+                                            *current_player_id.write().await = player_id.clone();
+                                        }
                                         if let Err(e) = server_tx_inner.send(game_msg).await {
                                             eprintln!("Error sending message: {}", e);
                                         }
@@ -410,8 +455,15 @@ impl GameServer {
                         }
                         Err(e) => {
                             eprintln!("WebSocket error: {}", e);
+                            break;
                         }
                     }
+                }
+
+                // WebSocket connection closed - clean up the player
+                let player_id = current_player_id.read().await.clone();
+                if !player_id.is_empty() {
+                    registry_clone.cleanup_player(&player_id).await;
                 }
             }
         });
@@ -419,6 +471,8 @@ impl GameServer {
         while let Some(message) = server_rx.recv().await {
             match message {
                 GameMessage::Ping { game_id, player_id } => {
+                    info!("Pong sent from {}", server_id);
+                    info!("Pong set from {}", server_id);
                     if let Some(game_id) = game_id {
                         registry
                             .subscribe_to_channel(server_id.clone(), game_id, ws_write.clone())
@@ -441,12 +495,13 @@ impl GameServer {
                 }
                 GameMessage::Play {
                     player_id,
+                    name,
                     single_bet_size,
                     min_players,
                     bombs,
                     grid,
                 } => {
-                    info!("Play request");
+                    info!("Play request at machine: {}", server_id);
                     let active_players_read = registry.active_players.read().await;
 
                     if active_players_read.contains(&player_id) {
@@ -460,175 +515,97 @@ impl GameServer {
                         continue;
                     }
                     drop(active_players_read);
-                    let games_read = registry.games.read().await;
 
-                    //TODO: Think of a better way to do this
-                    let mut matched_game = games_read.iter().find_map(|(game_id, state)| {
-                        if let GameState::WAITING {
-                            single_bet_size: size,
-                            min_players: mp,
-                            ..
-                        } = state
-                        {
-                            if *size == single_bet_size && *mp == min_players {
-                                Some((game_id.clone(), state.clone()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    });
-                    drop(games_read);
-                    if matched_game.is_none() {
-                        info!("Loading game from memory");
-                        // try to match game from redis
-
-                        registry.load_game_state().await;
-
-                        // FIXME: Remove redundant checking
-                        let games_read = registry.games.read().await;
-
-                        info!("Keys length after: {:?}", games_read.keys().len());
-                        matched_game = games_read.iter().find_map(|(game_id, state)| {
-                            if let GameState::WAITING {
-                                single_bet_size: size,
-                                min_players: mp,
-                                ..
-                            } = state
-                            {
-                                if *size == single_bet_size && *mp == min_players {
-                                    Some((game_id.clone(), state.clone()))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        });
-                        drop(games_read);
-                    }
-
-                    if let Some((
-                        game_id,
-                        GameState::WAITING {
-                            creator,
-                            board,
+                    // Try to find or create a game using discovery service
+                    match registry
+                        .handle_play_message(
+                            player_id.clone(),
+                            name.clone(),
                             single_bet_size,
                             min_players,
-                            mut players,
-                            ..
-                        },
-                    )) = matched_game
+                            bombs,
+                            grid,
+                        )
+                        .await
                     {
-                        // Now we can safely create a new player and prepare the new game state
-                        info!("Game has begun");
-                        let player = Player::new(player_id.clone());
-                        players.push(player);
+                        Ok(Some(game_state)) => {
+                            info!("created or joined on this server");
+                            // Game was created or joined on this server
+                            let game_id = match &game_state {
+                                GameState::WAITING { game_id, .. } => game_id.clone(),
+                                GameState::RUNNING { game_id, .. } => game_id.clone(),
+                                _ => unreachable!(),
+                            };
 
-                        let new_game_state = if players.len() < min_players as usize {
-                            GameState::WAITING {
-                                game_id: game_id.clone(),
-                                creator: creator.clone(),
-                                board: board.clone(),
-                                single_bet_size,
-                                min_players,
-                                players: players.clone(),
+                            // Subscribe to game updates
+                            registry
+                                .subscribe_to_channel(
+                                    server_id.clone(),
+                                    game_id.clone(),
+                                    ws_write.clone(),
+                                )
+                                .await?;
+
+                            let mut game_channels_write = registry.game_channels.write().await;
+                            game_channels_write.insert(game_id.clone(), server_tx.clone());
+                            drop(game_channels_write);
+
+                            let game_message = GameMessage::GameUpdate(game_state.clone());
+                            info!("Game Message: {:?}", game_message);
+                            let wrapper = GameMessageWrapper {
+                                server_id: server_id.clone(),
+                                game_message: game_message,
+                            };
+
+                            registry
+                                .publish_message(game_id.clone(), wrapper, false)
+                                .await?;
+
+                            let mut active_players_write = registry.active_players.write().await;
+                            active_players_write.insert(player_id);
+                        }
+                        Ok(None) => {
+                            // Game exists on another server, send redirect message
+                            if let Some(session) = registry
+                                .discovery
+                                .find_game_session(single_bet_size, min_players)
+                                .await?
+                            {
+                                let redirect = GameMessage::RedirectToServer {
+                                    game_id: session.game_id,
+                                    machine_id: session.server_id,
+                                };
+                                ws_write
+                                    .lock()
+                                    .await
+                                    .send(Message::binary(serde_json::to_vec(&redirect)?))
+                                    .await?;
+                            } else {
+                                let response =
+                                    GameMessage::Error("No suitable game found".to_string());
+                                ws_write
+                                    .lock()
+                                    .await
+                                    .send(Message::binary(serde_json::to_vec(&response)?))
+                                    .await?;
                             }
-                        } else {
-                            GameState::RUNNING {
-                                game_id: game_id.clone(),
-                                players: players.clone(),
-                                board: board.clone(),
-                                turn_idx: 0,
-                                single_bet_size,
-                                locks: None,
-                            }
-                        };
-
-                        let mut games_write = registry.games.write().await;
-                        games_write.insert(game_id.clone(), new_game_state.clone());
-
-                        // asyncrhonously save the state in redis
-                        registry
-                            .save_game_state(game_id.clone(), new_game_state.clone())
-                            .await;
-
-                        // need to subscribe so that this stream sink could receive messages
-                        registry
-                            .subscribe_to_channel(
-                                server_id.clone(),
-                                game_id.clone(),
-                                ws_write.clone(),
-                            )
-                            .await?;
-                        let mut game_channels_write = registry.game_channels.write().await;
-                        game_channels_write.insert(game_id.clone(), server_tx.clone());
-                        drop(game_channels_write);
-
-                        let game_message = GameMessage::GameUpdate(new_game_state.clone());
-
-                        let wrapper = GameMessageWrapper {
-                            server_id: server_id.clone(),
-                            game_message,
-                        };
-
-                        registry
-                            .publish_message(game_id.clone(), wrapper, false)
-                            .await?;
-                        let mut active_players_write = registry.active_players.write().await;
-                        active_players_write.insert(player_id);
-                    } else {
-                        info!("User will create a game");
-                        let game_id = Uuid::new_v4().to_string();
-                        let board = Board::new(grid as usize, bombs as usize);
-                        let player = Player::new(player_id.clone());
-
-                        let game_state = GameState::WAITING {
-                            game_id: game_id.clone(),
-                            creator: player.clone(),
-                            board,
-                            single_bet_size,
-                            min_players,
-                            players: vec![player.clone()],
-                        };
-
-                        // Store game state and channel
-                        let mut games_write = registry.games.write().await;
-                        games_write.insert(game_id.clone(), game_state.clone());
-
-                        // asyncrhonously save the state in redis
-                        registry
-                            .save_game_state(game_id.clone(), game_state.clone())
-                            .await;
-
-                        let mut game_channels_write = registry.game_channels.write().await;
-                        game_channels_write.insert(game_id.clone(), server_tx.clone());
-                        drop(game_channels_write);
-
-                        // need to subscribe so that this stream sink could receive messages
-                        registry
-                            .subscribe_to_channel(
-                                server_id.clone(),
-                                game_id.clone(),
-                                ws_write.clone(),
-                            )
-                            .await?;
-                        let game_message = GameMessage::GameUpdate(game_state.clone());
-
-                        let wrapper = GameMessageWrapper {
-                            server_id: server_id.clone(),
-                            game_message,
-                        };
-
-                        registry
-                            .publish_message(game_id.clone(), wrapper, false)
-                            .await?;
-                        let mut active_players_write = registry.active_players.write().await;
-                        active_players_write.insert(player_id);
+                        }
+                        Err(e) => {
+                            let response =
+                                GameMessage::Error(format!("Error handling play request: {}", e));
+                            ws_write
+                                .lock()
+                                .await
+                                .send(Message::binary(serde_json::to_vec(&response)?))
+                                .await?;
+                        }
                     }
                 }
-                GameMessage::Join { game_id, player_id } => {
+                GameMessage::Join {
+                    game_id,
+                    player_id,
+                    name,
+                } => {
                     info!("Request to join:: {:?} game", game_id);
 
                     // let games_read = registry.games.read().await;
@@ -643,9 +620,15 @@ impl GameServer {
                         players,
                     }) = game_state
                     {
-                        let new_player = Player::new(player_id.clone());
+                        let new_player = Player::new(player_id.clone(), name.clone());
                         let mut players = players.clone();
                         players.push(new_player);
+
+                        // Update player count in Redis
+                        registry
+                            .discovery
+                            .update_player_count(&game_id, players.len() as u32)
+                            .await?;
 
                         let new_game_state = if players.len() < min_players as usize {
                             GameState::WAITING {
@@ -657,6 +640,10 @@ impl GameServer {
                                 players,
                             }
                         } else {
+                            // Game is transitioning to RUNNING state
+                            // Remove from discovery since it's no longer accepting players
+                            registry.discovery.remove_game_session(&game_id).await?;
+
                             GameState::RUNNING {
                                 game_id: game_id.clone(),
                                 players,
@@ -668,11 +655,6 @@ impl GameServer {
                         };
                         let mut games_write = registry.games.write().await;
                         games_write.insert(game_id.clone(), new_game_state.clone());
-
-                        // asyncrhonously save the state in redis
-                        registry
-                            .save_game_state(game_id.clone(), new_game_state.clone())
-                            .await;
 
                         // need to subscribe so that this stream sink could receive messages
                         registry
@@ -709,8 +691,6 @@ impl GameServer {
                     }
                 }
                 GameMessage::Stop { game_id, abort } => {
-                    registry.load_game_if_absent(&game_id).await;
-
                     let mut games_write = registry.games.write().await;
                     if !abort {
                         // Meaning other players won
@@ -740,7 +720,8 @@ impl GameServer {
                                 let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
 
                                 active_players_write.retain(|x| !ids.contains(x));
-                                // asyncrhonously save the state in redis
+
+                                // Update discovery service
                                 registry
                                     .save_game_state(game_id.clone(), new_game_state.clone())
                                     .await;
@@ -775,32 +756,40 @@ impl GameServer {
                                     .await?;
                             }
                         }
-                    } else if let Some(game_state) = games_write.get_mut(&game_id) {
-                        if let GameState::RUNNING { players, .. } = game_state {
-                            // remove players from active state
-                            let mut active_players_write = registry.active_players.write().await;
+                    } else {
+                        // Game is being aborted
+                        if let Some(game_state) = games_write.get_mut(&game_id) {
+                            if let GameState::RUNNING { players, .. } = game_state {
+                                // remove players from active state
+                                let mut active_players_write =
+                                    registry.active_players.write().await;
+                                let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                                active_players_write.retain(|x| !ids.contains(x));
+                            }
 
-                            let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                            let aborted_state = GameState::ABORTED {
+                                game_id: game_id.clone(),
+                            };
+                            *game_state = aborted_state.clone();
 
-                            active_players_write.retain(|x| !ids.contains(x));
+                            // Update discovery service
+                            registry
+                                .save_game_state(game_id.clone(), aborted_state)
+                                .await;
+
+                            let game_message = GameMessage::GameUpdate(game_state.clone());
+                            let wrapper = GameMessageWrapper {
+                                server_id: server_id.clone(),
+                                game_message,
+                            };
+
+                            registry
+                                .publish_message(game_id.clone(), wrapper, false)
+                                .await?;
                         }
-                        *game_state = GameState::ABORTED {
-                            game_id: game_id.clone(),
-                        };
-                        let game_message = GameMessage::GameUpdate(game_state.clone());
-
-                        let wrapper = GameMessageWrapper {
-                            server_id: server_id.clone(),
-                            game_message,
-                        };
-
-                        registry
-                            .publish_message(game_id.clone(), wrapper, false)
-                            .await?;
                     }
                 }
                 GameMessage::MakeMove { game_id, x, y } => {
-                    registry.load_game_if_absent(&game_id).await;
                     let mut games_write = registry.games.write().await;
 
                     if let Some(game_state) = games_write.get_mut(&game_id) {
@@ -849,6 +838,7 @@ impl GameServer {
 
                                     active_players_write.retain(|x| !ids.contains(x));
 
+                                    // Update discovery service
                                     registry
                                         .save_game_state(game_id.clone(), new_game_state)
                                         .await;
@@ -868,6 +858,7 @@ impl GameServer {
                                 } else {
                                     // Not needed here as they will be updated in lock complete
                                     // *turn_idx = (*turn_idx + 1) % players.len();
+                                    info!("Setting locks to None, befor locks value: {:?}", *locks);
                                     *locks = None;
                                 }
 
@@ -931,11 +922,6 @@ impl GameServer {
                         } = game_state
                         {
                             *turn_idx = (*turn_idx + 1) % players.len();
-
-                            // Save turn changes to Redis - this is important for game state
-                            registry
-                                .save_game_state(game_id.clone(), game_state.clone())
-                                .await;
                         }
 
                         let game_message = GameMessage::GameUpdate(game_state.clone());
@@ -1001,6 +987,25 @@ impl GameServer {
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
                         }
+                    }
+                }
+                GameMessage::RedirectToServer {
+                    game_id,
+                    machine_id,
+                } => {
+                    unreachable!("Should fail if execution enters here");
+                    // Send the redirect message to the client
+                    let redirect = GameMessage::RedirectToServer {
+                        game_id,
+                        machine_id,
+                    };
+                    if let Err(e) = ws_write
+                        .lock()
+                        .await
+                        .send(Message::binary(serde_json::to_vec(&redirect)?))
+                        .await
+                    {
+                        eprintln!("Error sending redirect message: {}", e);
                     }
                 }
                 _ => {}

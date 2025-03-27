@@ -1,0 +1,278 @@
+# Frontend Implementation Requirements for Region-Aware Matchmaking
+
+## Backend Context
+
+### 1. New Message Type
+```rust
+GameMessage::RedirectToServer {
+    game_id: String,
+    server_id: String,
+    region: String,
+    redirect_url: String,
+}
+```
+
+### 2. Redirection Flow
+When a player sends a `Play` request, the backend:
+1. Checks if a suitable game exists in the current region
+2. If not found in current region, looks for games in other regions
+3. If a game is found in another region, sends a `RedirectToServer` message
+4. The `redirect_url` follows the format: `wss://{app_name}.{region}.fly.dev`
+
+### 3. Game Session States
+```rust
+GameState::WAITING {
+    game_id: String,
+    creator: Player,
+    board: Board,
+    single_bet_size: f64,
+    min_players: u32,
+    players: Vec<Player>,
+}
+
+GameState::RUNNING {
+    game_id: String,
+    players: Vec<Player>,
+    board: Board,
+    turn_idx: usize,
+    single_bet_size: f64,
+    locks: Option<Vec<(usize, usize)>>,
+}
+
+GameState::FINISHED {
+    game_id: String,
+    loser_idx: usize,
+    board: Board,
+    players: Vec<Player>,
+    single_bet_size: f64,
+}
+
+GameState::ABORTED {
+    game_id: String,
+}
+```
+
+## Frontend Requirements
+
+### 1. WebSocket Message Handling
+Add handling for new `RedirectToServer` message type:
+```typescript
+interface RedirectToServer {
+    type: 'RedirectToServer';
+    game_id: string;
+    server_id: string;
+    region: string;
+    redirect_url: string;
+}
+```
+
+### 2. Connection Management
+Implement logic to:
+- Close existing WebSocket connection gracefully
+- Connect to new server using `redirect_url`
+- Re-send the original Play request to new server
+- Handle connection timeouts and errors
+
+### 3. State Management
+- Store last Play request for replay after redirect
+- Track connection state (connected, redirecting, error)
+- Maintain game state across redirects
+
+### 4. Error Scenarios to Handle
+- Connection failure to new server
+- Timeout during redirect
+- Failed replay of Play request
+- Maximum redirect attempts reached
+
+### 5. User Experience
+- Show connection status
+- Indicate when redirecting to a different region
+- Display appropriate error messages
+- Handle game state persistence during redirect
+
+### 6. Configuration
+- Support Fly.io region-specific WebSocket URLs
+- Configure timeouts for:
+  - Initial connection
+  - Redirect connection
+  - Play request replay
+- Set retry attempts and delays
+
+## Example Message Flow
+
+### 1. Initial Play Request
+```typescript
+// Client sends
+{
+    type: 'Play',
+    player_id: string,
+    single_bet_size: number,
+    min_players: number,
+    bombs: number,
+    grid: number
+}
+```
+
+### 2. Redirect Response
+```typescript
+// Server sends
+{
+    type: 'RedirectToServer',
+    game_id: string,
+    server_id: string,
+    region: string,
+    redirect_url: string
+}
+```
+
+### 3. After Redirect
+Client should reconnect and replay the original Play request.
+Server will then respond with either:
+
+```typescript
+// Success case
+{
+    type: 'GameUpdate',
+    state: GameState
+}
+
+// Error case
+{
+    type: 'Error',
+    message: string
+}
+```
+
+## Implementation Example
+
+```typescript
+class GameClient {
+    private ws: WebSocket;
+    private reconnectAttempts: number = 0;
+    private maxReconnectAttempts: number = 3;
+    private lastPlayRequest: any;
+
+    constructor(baseUrl: string) {
+        this.connect(baseUrl);
+    }
+
+    private connect(url: string) {
+        this.ws = new WebSocket(url);
+        this.setupEventHandlers();
+    }
+
+    private setupEventHandlers() {
+        this.ws.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+            
+            if (message.type === 'RedirectToServer') {
+                this.handleRedirect(message);
+            }
+            // ... handle other message types
+        }
+    }
+
+    private async handleRedirect(message: {
+        game_id: string,
+        server_id: string,
+        region: string,
+        redirect_url: string
+    }) {
+        try {
+            // Store current request
+            const currentRequest = this.lastPlayRequest;
+            
+            // Close current connection gracefully
+            this.ws.close();
+
+            // Connect to new server with timeout
+            const connectPromise = new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Connection timeout'));
+                }, 5000);
+
+                this.ws = new WebSocket(message.redirect_url);
+                
+                this.ws.onopen = () => {
+                    clearTimeout(timeout);
+                    resolve(true);
+                };
+                
+                this.ws.onerror = (error) => {
+                    clearTimeout(timeout);
+                    reject(error);
+                };
+            });
+
+            await connectPromise;
+
+            // Replay request if exists
+            if (currentRequest) {
+                this.sendPlayRequest(currentRequest);
+            }
+        } catch (error) {
+            // Handle errors and implement retry logic
+            if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                await this.handleRedirect(message);
+            } else {
+                this.onError?.(new Error(`Failed to redirect after ${this.maxReconnectAttempts} attempts`));
+            }
+        }
+    }
+
+    public sendPlayRequest(request: {
+        player_id: string,
+        single_bet_size: number,
+        min_players: number,
+        bombs: number,
+        grid: number
+    }) {
+        this.lastPlayRequest = request;
+        const message = {
+            type: 'Play',
+            ...request
+        };
+        this.ws.send(JSON.stringify(message));
+    }
+}
+```
+
+## Important Notes
+1. WebSocket connection should handle binary messages (backend sends binary-encoded JSON)
+2. All game state updates come through the `GameUpdate` message type
+3. Redirect URL format: `wss://{app_name}.{region}.fly.dev`
+4. Implement exponential backoff for reconnection attempts
+5. Preserve game state and player information across redirects
+6. Handle cases where multiple redirects might occur
+7. Consider adding region latency monitoring for better user experience
+
+## Configuration Example
+```typescript
+interface GameClientConfig {
+    baseUrl: string;
+    appName: string;
+    timeouts: {
+        connection: number;
+        replay: number;
+    };
+    retry: {
+        maxAttempts: number;
+        delay: number;
+    };
+}
+
+const defaultConfig: GameClientConfig = {
+    baseUrl: 'wss://mines-game007.fly.dev',
+    appName: 'mines-game007',
+    timeouts: {
+        connection: 5000,
+        replay: 5000
+    },
+    retry: {
+        maxAttempts: 3,
+        delay: 1000
+    }
+};
+``` 

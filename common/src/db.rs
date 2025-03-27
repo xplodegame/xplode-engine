@@ -4,7 +4,7 @@ use std::env;
 use tracing::info;
 
 use crate::{
-    models::{GamePnl, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{LeaderboardEntry, User, Wallet},
     utils::{Currency, Network},
 };
 
@@ -83,8 +83,6 @@ pub async fn update_player_balances(
     info!("Updating player balances for user_ids: {:?}", user_ids);
     let mut tx = pool.begin().await?;
     // Default to SOLANA network if none is provided
-    let network = Network::MONAD;
-    let network_str = network.to_string();
     let currency_str = currency.to_string();
 
     for (i, user_id) in user_ids.iter().enumerate() {
@@ -113,74 +111,71 @@ pub async fn update_player_balances(
         .execute(&mut *tx)
         .await?;
 
-        record_game_result_tx(&mut tx, *user_id, &network_str, profit).await?;
+        record_game_result_tx(&mut tx, *user_id, &currency_str, profit).await?;
     }
 
     tx.commit().await?;
     Ok(())
 }
 
-async fn record_game_result_tx(
+pub async fn record_game_result_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     user_id: i32,
-    network: &str,
+    currency: &str,
     profit: f64,
-) -> Result<()> {
-    info!("Recording game result for user_id: {:?}", user_id);
-    info!("Network: {:?}", network);
-    info!("Profit: {:?}", profit);
-    sqlx::query("INSERT INTO game_pnl (user_id, network, profit) VALUES ($1, $2, $3)")
+) -> Result<(), Error> {
+    info!(
+        "Recording game result for user {} with profit {}",
+        user_id, profit
+    );
+    info!("Currency: {:?}", currency);
+
+    sqlx::query("INSERT INTO game_pnl (user_id, currency, profit) VALUES ($1, $2, $3)")
         .bind(user_id)
-        .bind(network)
+        .bind(currency)
         .bind(profit)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
     sqlx::query(
-        r#"
-        INSERT INTO user_network_pnl (user_id, network, total_matches, total_profit)
+        "INSERT INTO user_network_pnl (user_id, currency, total_matches, total_profit)
         VALUES ($1, $2, 1, $3)
-        ON CONFLICT (user_id, network) DO UPDATE
+        ON CONFLICT (user_id, currency) DO UPDATE
         SET total_matches = user_network_pnl.total_matches + 1,
             total_profit = user_network_pnl.total_profit + $3,
-            updated_at = CURRENT_TIMESTAMP
-        "#,
+            updated_at = NOW()",
     )
     .bind(user_id)
-    .bind(network)
+    .bind(currency)
     .bind(profit)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
 
     Ok(())
 }
 
 pub async fn get_leaderboard_24h(
-    pool: &PgPool,
-    network: &str,
-    limit: i64,
-) -> Result<Vec<LeaderboardEntry>> {
-    sqlx::query_as::<_, LeaderboardEntry>(
-        "SELECT * FROM leaderboard_24h WHERE network = $1 LIMIT $2",
-    )
-    .bind(network)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(Error::from)
+    pool: &Pool<Postgres>,
+    currency: &str,
+    limit: i32,
+) -> Result<Vec<LeaderboardEntry>, Error> {
+    sqlx::query_as("SELECT * FROM leaderboard_24h WHERE currency = $1 LIMIT $2")
+        .bind(currency)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(Error::from)
 }
 
 pub async fn get_leaderboard_all_time(
-    pool: &PgPool,
-    network: &str,
-    limit: i64,
-) -> Result<Vec<LeaderboardEntry>> {
-    sqlx::query_as::<_, LeaderboardEntry>(
-        "SELECT * FROM leaderboard_all_time WHERE network = $1 LIMIT $2",
-    )
-    .bind(network)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(Error::from)
+    pool: &Pool<Postgres>,
+    currency: &str,
+    limit: i32,
+) -> Result<Vec<LeaderboardEntry>, Error> {
+    sqlx::query_as("SELECT * FROM leaderboard_all_time WHERE currency = $1 LIMIT $2")
+        .bind(currency)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(Error::from)
 }
