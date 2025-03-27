@@ -133,18 +133,18 @@ async fn update_user_details(
     }
 }
 
-#[actix_web::get("/user-stats/{user_id}/{network}")]
+#[actix_web::get("/user-stats/{user_id}/{currency}")]
 async fn get_user_stats(
     path: web::Path<(i32, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let (user_id, network) = path.into_inner();
+    let (user_id, currency) = path.into_inner();
     let AppState { pool } = &**app_state;
 
     let stats: UserNetworkPnl =
-        sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND network = $2")
+        sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND currency = $2")
             .bind(user_id)
-            .bind(network)
+            .bind(currency)
             .fetch_one(pool)
             .await
             .expect("Error fetching user stats");
@@ -152,19 +152,19 @@ async fn get_user_stats(
     HttpResponse::Ok().json(stats)
 }
 
-#[actix_web::get("/leaderboard/{network}/{timeframe}")]
+#[actix_web::get("/leaderboard/{currency}/{timeframe}")]
 async fn get_leaderboard(
     path: web::Path<(String, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let (network, timeframe) = path.into_inner();
+    let (currency, timeframe) = path.into_inner();
     let AppState { pool } = &**app_state;
 
     let leaders: Vec<LeaderboardEntry> = match timeframe.as_str() {
-        "24h" => db::get_leaderboard_24h(pool, &network, 100)
+        "24h" => db::get_leaderboard_24h(pool, &currency, 100)
             .await
             .expect("Failed to fetch leaderboard"),
-        "all" => db::get_leaderboard_all_time(pool, &network, 100)
+        "all" => db::get_leaderboard_all_time(pool, &currency, 100)
             .await
             .expect("Failed to fetch leaderboard"),
         _ => return HttpResponse::BadRequest().body("Invalid timeframe"),
