@@ -6,7 +6,8 @@ use common::{
     db,
     models::{self, LeaderboardEntry, User, UserNetworkPnl, Wallet},
     utils::{
-        self, Currency, DepositRequest, Network, UserDetailsRequest, WalletType, WithdrawRequest,
+        self, Currency, DepositRequest, Network, UpdateUserDetailsRequest, UserDetailsRequest,
+        WalletType, WithdrawRequest,
     },
 };
 use db::establish_connection;
@@ -53,6 +54,7 @@ async fn fetch_or_create_user(
             HttpResponse::Ok().json(json!({
                 "id": user.id,
                 "currency": Currency::MON.to_string(),
+                "name": user.name,
                 "balance": wallet.balance,
                 "wallet_type": wallet.wallet_type,
                 "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
@@ -96,18 +98,53 @@ async fn fetch_or_create_user(
     }
 }
 
-#[actix_web::get("/user-stats/{user_id}/{network}")]
+#[actix_web::post("/user-details/{user_id}")]
+async fn update_user_details(
+    path: web::Path<i32>,
+    req: web::Json<UpdateUserDetailsRequest>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    let user_id = path.into_inner();
+    let AppState { pool } = &**app_state;
+
+    let mut tx = pool.begin().await.expect("Failed to start transaction");
+
+    let existing_user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("Error fetching user");
+
+    match existing_user {
+        Some(user) => {
+            sqlx::query("UPDATE users SET name = $1, email = $2 WHERE id = $3")
+                .bind(req.name.clone().unwrap_or(user.name))
+                .bind(req.email.clone().unwrap_or(user.email))
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .expect("Error updating user details");
+
+            tx.commit().await.expect("Failed to commit transaction");
+
+            HttpResponse::Ok().body("User details updated successfully")
+        }
+        None => HttpResponse::NotFound().body("User not found"),
+    }
+}
+
+#[actix_web::get("/user-stats/{user_id}/{currency}")]
 async fn get_user_stats(
     path: web::Path<(i32, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let (user_id, network) = path.into_inner();
+    let (user_id, currency) = path.into_inner();
     let AppState { pool } = &**app_state;
 
     let stats: UserNetworkPnl =
-        sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND network = $2")
+        sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND currency = $2")
             .bind(user_id)
-            .bind(network)
+            .bind(currency)
             .fetch_one(pool)
             .await
             .expect("Error fetching user stats");
@@ -115,19 +152,19 @@ async fn get_user_stats(
     HttpResponse::Ok().json(stats)
 }
 
-#[actix_web::get("/leaderboard/{network}/{timeframe}")]
+#[actix_web::get("/leaderboard/{currency}/{timeframe}")]
 async fn get_leaderboard(
     path: web::Path<(String, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let (network, timeframe) = path.into_inner();
+    let (currency, timeframe) = path.into_inner();
     let AppState { pool } = &**app_state;
 
     let leaders: Vec<LeaderboardEntry> = match timeframe.as_str() {
-        "24h" => db::get_leaderboard_24h(pool, &network, 100)
+        "24h" => db::get_leaderboard_24h(pool, &currency, 100)
             .await
             .expect("Failed to fetch leaderboard"),
-        "all" => db::get_leaderboard_all_time(pool, &network, 100)
+        "all" => db::get_leaderboard_all_time(pool, &currency, 100)
             .await
             .expect("Failed to fetch leaderboard"),
         _ => return HttpResponse::BadRequest().body("Invalid timeframe"),
@@ -302,6 +339,7 @@ async fn main() -> std::io::Result<()> {
             .service(fetch_or_create_user)
             .service(get_user_stats)
             .service(get_leaderboard)
+            .service(update_user_details)
     })
     .bind("0.0.0.0:8080")?
     .run()

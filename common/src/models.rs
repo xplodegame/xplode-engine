@@ -34,8 +34,6 @@ pub struct Transaction {
     pub currency: String,
     pub tx_type: String,
     pub tx_hash: String,
-    pub status: String,
-    pub network: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -43,8 +41,7 @@ pub struct Transaction {
 pub struct GamePnl {
     pub id: i32,
     pub user_id: i32,
-    pub network: String,
-    pub num_matches: i32,
+    pub currency: String,
     pub profit: f64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -54,7 +51,7 @@ pub struct GamePnl {
 pub struct UserNetworkPnl {
     pub id: i32,
     pub user_id: i32,
-    pub network: String,
+    pub currency: String,
     pub total_matches: i32,
     pub total_profit: f64,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -64,8 +61,8 @@ pub struct UserNetworkPnl {
 #[derive(Deserialize, Serialize, sqlx::FromRow)]
 pub struct LeaderboardEntry {
     pub name: String,
-    pub network: String,
-    pub games_played: i64,
+    pub currency: String,
     pub total_profit: f64,
+    pub total_matches: i64,
     pub rank: i64,
 }

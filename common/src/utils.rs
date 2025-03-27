@@ -37,6 +37,12 @@ pub struct UserDetailsRequest {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct UpdateUserDetailsRequest {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct DepositRequest {
     pub user_id: i32,
     pub amount: f64,
