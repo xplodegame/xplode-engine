@@ -347,7 +347,7 @@ impl GameRegistry {
         // Register the new game session
         let session = GameSession {
             game_id: game_id.clone(),
-            server_id: env::var("FLY_MACHINE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string()),
+            server_id: self.server_id.clone(),
             single_bet_size,
             min_players,
             current_players: 1,
@@ -372,7 +372,7 @@ impl GameServer {
         let redis_url = env::var("REDIS_URL").unwrap();
         info!("Redis URL: {}", redis_url);
         let redis_client = Client::open(redis_url).unwrap();
-        let server_id = env::var("FLY_MACHINE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
+        let server_id = env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "LocalServer".to_string());
 
         Self {
             server_id: server_id.clone(),
@@ -471,9 +471,7 @@ impl GameServer {
         while let Some(message) = server_rx.recv().await {
             match message {
                 GameMessage::Ping { game_id, player_id } => {
-                    let machine_id =
-                        env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "unknown".to_string());
-                    info!("Pong sent from {}", machine_id);
+                    info!("Pong sent from {}", server_id);
                     info!("Pong set from {}", server_id);
                     if let Some(game_id) = game_id {
                         registry
