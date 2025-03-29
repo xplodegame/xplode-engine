@@ -8,9 +8,9 @@ use futures_util::{
     stream::{SplitSink, StreamExt},
     SinkExt,
 };
-
 use redis::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -31,6 +31,7 @@ use uuid::Uuid;
 use crate::{
     board::Board,
     discovery::{DiscoveryService, GameSession},
+    metrics,
     player::Player,
 };
 
@@ -120,7 +121,6 @@ pub struct GameRegistry {
     active_players: Arc<RwLock<HashSet<String>>>,
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
-    // redis: redis::Client,
     discovery: DiscoveryService,
     server_id: String,
 }
@@ -134,7 +134,6 @@ impl GameRegistry {
             active_players: Arc::new(RwLock::new(HashSet::new())),
             game_channels: Arc::new(RwLock::new(HashMap::new())),
             broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
-            // redis: redis.clone(),
             discovery: DiscoveryService::new(redis),
             server_id,
         }
@@ -148,10 +147,22 @@ impl GameRegistry {
                     .discovery
                     .update_player_count(&game_id, players.len() as u32)
                     .await;
+
+                // Update metrics
+                metrics::ACTIVE_GAMES.inc();
+                metrics::TOTAL_PLAYERS_ONLINE.set(players.len() as i64);
             }
-            GameState::FINISHED { .. } | GameState::ABORTED { .. } => {
+            GameState::FINISHED { .. } => {
                 // Remove from discovery when game ends
                 let _ = self.discovery.remove_game_session(&game_id).await;
+                metrics::ACTIVE_GAMES.dec();
+                metrics::GAMES_COMPLETED.inc();
+            }
+            GameState::ABORTED { .. } => {
+                // Remove from discovery when game ends
+                let _ = self.discovery.remove_game_session(&game_id).await;
+                metrics::ACTIVE_GAMES.dec();
+                metrics::GAMES_ABANDONED.inc();
             }
             _ => {}
         }
@@ -166,11 +177,13 @@ impl GameRegistry {
     // This is still needed for real-time game updates between players
     pub async fn subscribe_to_channel(
         &self,
-        _server_id: String, // Not needed anymore since we're local only
+        _server_id: String,
         channel: String,
         ws_write: Arc<Mutex<WebSocketSink>>,
     ) -> Result<()> {
         info!("Subscribing to channel: {:?}", channel);
+        metrics::record_player_connection();
+
         let mut broadcast_channels = self.broadcast_channels.write().await;
 
         // Create a new broadcast channel if it doesn't exist
@@ -182,7 +195,7 @@ impl GameRegistry {
         // Get the sender and create a new receiver
         let broadcast_tx = broadcast_channels.get(&channel).unwrap();
         let mut broadcast_rx = broadcast_tx.subscribe();
-        drop(broadcast_channels); // Release the write lock
+        drop(broadcast_channels);
 
         // Spawn a task to forward messages to this client's WebSocket
         tokio::spawn(async move {
@@ -194,7 +207,8 @@ impl GameRegistry {
                     .is_err()
                 {
                     eprintln!("Player disconnected");
-                    break; // Exit the loop if client disconnects
+                    metrics::record_player_disconnection();
+                    break;
                 }
             }
         });
@@ -217,6 +231,7 @@ impl GameRegistry {
 
     // Add new cleanup method
     pub async fn cleanup_player(&self, player_id: &str) {
+        metrics::record_player_disconnection();
         // Remove from active players
         let mut active_players_write = self.active_players.write().await;
         active_players_write.remove(player_id);
@@ -255,110 +270,120 @@ impl GameRegistry {
         bombs: u32,
         grid: u32,
     ) -> Result<Option<GameState>> {
-        // First check if player is already in a game
-        let active_players_read = self.active_players.read().await;
-        if active_players_read.contains(&player_id) {
-            return Ok(None);
-        }
-        drop(active_players_read);
+        let start_time = Instant::now();
+        let result = {
+            // First check if player is already in a game
+            let active_players_read = self.active_players.read().await;
+            if active_players_read.contains(&player_id) {
+                return Ok(None);
+            }
+            drop(active_players_read);
 
-        // Try to find an existing game session through discovery service
-        // let current_region = env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string());
-        if let Some(session) = self
-            .discovery
-            .find_game_session(single_bet_size, min_players)
-            .await?
-        {
-            // If the session is on this server, get it from local state
-            if session.server_id == self.server_id {
-                let state = {
-                    let games_read = self.games.read().await;
-                    if let Some(state) = games_read.get(&session.game_id) {
-                        Some(state.clone())
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some(GameState::WAITING {
-                    game_id,
-                    creator,
-                    board,
-                    single_bet_size,
-                    min_players,
-                    mut players,
-                }) = state
-                {
-                    let player = Player::new(player_id.clone(), name.clone());
-                    players.push(player);
-
-                    // Update player count in Redis
-                    self.discovery
-                        .update_player_count(&game_id, players.len() as u32)
-                        .await?;
-
-                    let new_state = if players.len() < min_players as usize {
-                        GameState::WAITING {
-                            game_id: game_id.clone(),
-                            creator,
-                            board,
-                            single_bet_size,
-                            min_players,
-                            players,
-                        }
-                    } else {
-                        // Game is transitioning to RUNNING state
-                        // Remove from discovery since it's no longer accepting players
-                        self.discovery.remove_game_session(&game_id).await?;
-
-                        GameState::RUNNING {
-                            game_id: game_id.clone(),
-                            players,
-                            board,
-                            turn_idx: 0,
-                            single_bet_size,
-                            locks: None,
+            // Try to find an existing game session through discovery service
+            if let Some(session) = self
+                .discovery
+                .find_game_session(single_bet_size, min_players)
+                .await?
+            {
+                // If the session is on this server, get it from local state
+                if session.server_id == self.server_id {
+                    let state = {
+                        let games_read = self.games.read().await;
+                        if let Some(state) = games_read.get(&session.game_id) {
+                            Some(state.clone())
+                        } else {
+                            None
                         }
                     };
 
-                    let mut games_write = self.games.write().await;
-                    games_write.insert(game_id.clone(), new_state.clone());
-                    return Ok(Some(new_state));
+                    if let Some(GameState::WAITING {
+                        game_id,
+                        creator,
+                        board,
+                        single_bet_size,
+                        min_players,
+                        mut players,
+                    }) = state
+                    {
+                        let player = Player::new(player_id.clone(), name.clone());
+                        players.push(player);
+
+                        // Update player count in Redis
+                        self.discovery
+                            .update_player_count(&game_id, players.len() as u32)
+                            .await?;
+
+                        let new_state = if players.len() < min_players as usize {
+                            GameState::WAITING {
+                                game_id: game_id.clone(),
+                                creator,
+                                board,
+                                single_bet_size,
+                                min_players,
+                                players,
+                            }
+                        } else {
+                            // Game is transitioning to RUNNING state
+                            // Remove from discovery since it's no longer accepting players
+                            self.discovery.remove_game_session(&game_id).await?;
+
+                            GameState::RUNNING {
+                                game_id: game_id.clone(),
+                                players,
+                                board,
+                                turn_idx: 0,
+                                single_bet_size,
+                                locks: None,
+                            }
+                        };
+
+                        let mut games_write = self.games.write().await;
+                        games_write.insert(game_id.clone(), new_state.clone());
+                        return Ok(Some(new_state));
+                    }
                 }
+                // If session is on another server, return None - client should reconnect to that server
+                return Ok(None);
             }
-            // If session is on another server, return None - client should reconnect to that server
-            return Ok(None);
-        }
 
-        // Create new game if no suitable session found
-        let game_id = Uuid::new_v4().to_string();
-        let board = Board::new(grid as usize, bombs as usize);
-        let player = Player::new(player_id.clone(), name.clone());
+            // Create new game if no suitable session found
+            let game_id = Uuid::new_v4().to_string();
+            let board = Board::new(grid as usize, bombs as usize);
+            let player = Player::new(player_id.clone(), name.clone());
 
-        let game_state = GameState::WAITING {
-            game_id: game_id.clone(),
-            creator: player.clone(),
-            board,
-            single_bet_size,
-            min_players,
-            players: vec![player.clone()],
+            let game_state = GameState::WAITING {
+                game_id: game_id.clone(),
+                creator: player.clone(),
+                board,
+                single_bet_size,
+                min_players,
+                players: vec![player.clone()],
+            };
+
+            // Register the new game session
+            let session = GameSession {
+                game_id: game_id.clone(),
+                server_id: self.server_id.clone(),
+                single_bet_size,
+                min_players,
+                current_players: 1,
+            };
+            self.discovery.register_game_session(session).await?;
+
+            // Store in local state
+            let mut games_write = self.games.write().await;
+            games_write.insert(game_id.clone(), game_state.clone());
+
+            Ok(Some(game_state))
         };
 
-        // Register the new game session
-        let session = GameSession {
-            game_id: game_id.clone(),
-            server_id: self.server_id.clone(),
-            single_bet_size,
-            min_players,
-            current_players: 1,
-        };
-        self.discovery.register_game_session(session).await?;
+        // Record transaction processing time
+        metrics::record_transaction_processing_time(
+            "play_message",
+            start_time.elapsed().as_secs_f64(),
+        );
 
-        // Store in local state
-        let mut games_write = self.games.write().await;
-        games_write.insert(game_id.clone(), game_state.clone());
-
-        Ok(Some(game_state))
+        result
     }
 }
 
@@ -382,18 +407,32 @@ impl GameServer {
 
     pub async fn start(&self, addr: &str) -> anyhow::Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        info!("Server listening on {}", addr);
+        info!("Game server listening on: {}", addr);
 
-        while let std::result::Result::Ok((stream, _)) = listener.accept().await {
-            let registry = self.registry.clone();
-            let server_id = self.server_id.clone();
+        let registry = self.registry.clone();
+        let server_id = self.server_id.clone();
+
+        while let Ok((stream, _)) = listener.accept().await {
+            let start_time = Instant::now();
+            let peer = stream.peer_addr().ok();
+            info!("New connection from: {:?}", peer);
+
+            let server_id = server_id.clone();
+            let registry = registry.clone();
 
             tokio::spawn(async move {
-                info!("Establishing connection");
-                if let Err(e) = GameServer::handle_connection(server_id, registry, stream).await {
+                if let Err(e) = Self::handle_connection(server_id, registry, stream).await {
                     eprintln!("Error handling connection: {}", e);
                 }
             });
+
+            // Record connection handling time
+            metrics::record_http_request(
+                "websocket_connection",
+                "UPGRADE",
+                "200",
+                start_time.elapsed().as_secs_f64(),
+            );
         }
 
         Ok(())

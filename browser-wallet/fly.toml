@@ -1,8 +1,4 @@
-# fly.toml app configuration file generated for mines-browser-wallet007 on 2025-03-17T01:46:55+05:30
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
+# fly.toml app configuration file for mines-browser-wallet007
 app = 'mines-browser-wallet007'
 primary_region = 'bom'
 
@@ -40,10 +36,20 @@ primary_region = 'bom'
     path = '/health'
     protocol = 'http'
 
+[regions]
+primary = ["bom", "iad"]
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+  region = "bom"
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  region = "iad"
 
 [[metrics]]
   port = 9091

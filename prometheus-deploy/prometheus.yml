@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'browser-wallet'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['mines-browser-wallet007.internal:8080'] # Your app name on fly.io
+    metrics_path: /metrics
+
+  - job_name: 'game-server'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['mines-game007.internal:9092']  # Your app name on fly.io
+    metrics_path: /metrics

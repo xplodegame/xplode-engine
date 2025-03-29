@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'browser-wallet'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    metrics_path: '/metrics'
+    scheme: http
+    dns_sd_configs:
+      - names: ['host.docker.internal']
+        type: 'A'
+        port: 8080
+
+  - job_name: 'game-server'
+    static_configs:
+      - targets: ['host.docker.internal:9092']
+    metrics_path: '/metrics'
+    scheme: http
+    dns_sd_configs:
+      - names: ['host.docker.internal']
+        type: 'A'
+        port: 9092 

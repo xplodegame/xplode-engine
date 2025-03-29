@@ -1,35 +1,46 @@
-use std::{env, fs, time::SystemTime};
+use std::sync::Arc;
 
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
     db,
-    models::{self, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    utils::TxType,
     utils::{
-        self, Currency, DepositRequest, Network, UpdateUserDetailsRequest, UserDetailsRequest,
-        WalletType, WithdrawRequest,
+        Currency, DepositRequest, UpdateUserDetailsRequest, UserDetailsRequest, WalletType,
+        WithdrawRequest,
     },
 };
 use db::establish_connection;
 use dotenv::dotenv;
+use prometheus_client::encoding::text::encode;
+use prometheus_client::registry::Registry;
+use tokio::sync::RwLock;
 
 use evm_deposits::transfer_funds;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use utils::TxType;
+
+mod metrics;
+use metrics::{Metrics, SharedMetrics};
 
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let start_time = std::time::Instant::now();
     info!(
         "Fetching or creating user with privy_id: {:?}",
         req.privy_id
     );
-    let AppState { pool } = &**app_state;
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
     // Check if the user already exists
@@ -50,6 +61,13 @@ async fn fetch_or_create_user(
                     .expect("Error fetching wallet");
 
             tx.commit().await.expect("Failed to commit transaction");
+
+            // Update metrics
+            let metrics = metrics.write().await;
+            metrics.active_users.inc();
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
 
             HttpResponse::Ok().json(json!({
                 "id": user.id,
@@ -87,6 +105,13 @@ async fn fetch_or_create_user(
 
             tx.commit().await.expect("Failed to commit transaction");
 
+            // Update metrics
+            let metrics = metrics.write().await;
+            metrics.active_users.inc();
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
+
             HttpResponse::Created().json(json!({
                 "user_id": created_user.id,
                 "currency": Currency::MON.to_string() ,
@@ -104,8 +129,13 @@ async fn update_user_details(
     req: web::Json<UpdateUserDetailsRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let start_time = std::time::Instant::now();
     let user_id = path.into_inner();
-    let AppState { pool } = &**app_state;
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
 
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -127,9 +157,23 @@ async fn update_user_details(
 
             tx.commit().await.expect("Failed to commit transaction");
 
+            // Update metrics
+            let metrics = metrics.write().await;
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
+
             HttpResponse::Ok().body("User details updated successfully")
         }
-        None => HttpResponse::NotFound().body("User not found"),
+        None => {
+            // Update metrics for failed operation
+            let metrics = metrics.write().await;
+            metrics.failed_transactions.inc();
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
+            HttpResponse::NotFound().body("User not found")
+        }
     }
 }
 
@@ -138,8 +182,13 @@ async fn get_user_stats(
     path: web::Path<(i32, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let start_time = std::time::Instant::now();
     let (user_id, currency) = path.into_inner();
-    let AppState { pool } = &**app_state;
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
 
     let stats: UserNetworkPnl =
         sqlx::query_as("SELECT * FROM user_network_pnl WHERE user_id = $1 AND currency = $2")
@@ -149,6 +198,12 @@ async fn get_user_stats(
             .await
             .expect("Error fetching user stats");
 
+    // Update metrics
+    let metrics = metrics.write().await;
+    metrics
+        .api_latency
+        .observe(start_time.elapsed().as_secs_f64());
+
     HttpResponse::Ok().json(stats)
 }
 
@@ -157,8 +212,13 @@ async fn get_leaderboard(
     path: web::Path<(String, String)>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
+    let start_time = std::time::Instant::now();
     let (currency, timeframe) = path.into_inner();
-    let AppState { pool } = &**app_state;
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
 
     let leaders: Vec<LeaderboardEntry> = match timeframe.as_str() {
         "24h" => db::get_leaderboard_24h(pool, &currency, 100)
@@ -167,8 +227,22 @@ async fn get_leaderboard(
         "all" => db::get_leaderboard_all_time(pool, &currency, 100)
             .await
             .expect("Failed to fetch leaderboard"),
-        _ => return HttpResponse::BadRequest().body("Invalid timeframe"),
+        _ => {
+            // Update metrics for failed operation
+            let metrics = metrics.write().await;
+            metrics.failed_transactions.inc();
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
+            return HttpResponse::BadRequest().body("Invalid timeframe");
+        }
     };
+
+    // Update metrics
+    let metrics = metrics.write().await;
+    metrics
+        .api_latency
+        .observe(start_time.elapsed().as_secs_f64());
 
     HttpResponse::Ok().json(leaders)
 }
@@ -184,7 +258,12 @@ async fn deposit(
     deposit_request: web::Json<DepositRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let AppState { pool } = &**app_state;
+    let start_time = std::time::Instant::now();
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
     let deposit_request = deposit_request.into_inner();
     info!("Deposit request arrived");
     info!("Deposit request: {:?}", deposit_request);
@@ -227,6 +306,17 @@ async fn deposit(
 
     tx.commit().await.expect("Failed to commit transaction");
 
+    // Update metrics
+    let metrics = metrics.write().await;
+    metrics.total_deposits.inc();
+    metrics.transaction_amount.observe(deposit_request.amount);
+    metrics
+        .total_wallet_balance
+        .set((new_balance * 100.0) as i64);
+    metrics
+        .api_latency
+        .observe(start_time.elapsed().as_secs_f64());
+
     HttpResponse::Ok().json(json!({
         "user_id": deposit_request.user_id,
         "currency": deposit_request.currency,
@@ -240,7 +330,12 @@ async fn withdraw(
     withdraw_req: web::Json<WithdrawRequest>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    let AppState { pool } = &**app_state;
+    let start_time = std::time::Instant::now();
+    let AppState {
+        pool,
+        metrics,
+        registry: _,
+    } = &**app_state;
     let withdraw_req = withdraw_req.into_inner();
     info!("Attempting to withdraw");
 
@@ -255,13 +350,25 @@ async fn withdraw(
             .expect("Error fetching wallet");
 
     if withdraw_req.amount > wallet.balance {
+        // Update metrics for failed transaction
+        let metrics = metrics.write().await;
+        metrics.failed_transactions.inc();
+        metrics
+            .api_latency
+            .observe(start_time.elapsed().as_secs_f64());
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
     let tx_hash = match transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount).await {
         Ok(hash) => hash,
         Err(e) => {
-            return HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
+            // Update metrics for failed transaction
+            let metrics = metrics.write().await;
+            metrics.failed_transactions.inc();
+            metrics
+                .api_latency
+                .observe(start_time.elapsed().as_secs_f64());
+            return HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e));
         }
     };
 
@@ -277,13 +384,6 @@ async fn withdraw(
     .execute(&mut *tx)
     .await
     .expect("Error updating wallet balance");
-
-    // // Generate transaction hash for withdrawal
-    // let timestamp = SystemTime::now()
-    //     .duration_since(SystemTime::UNIX_EPOCH)
-    //     .unwrap()
-    //     .as_millis();
-    // let tx_hash = format!("withdraw_{}", timestamp);
 
     // Record the transaction
     sqlx::query(
@@ -301,6 +401,17 @@ async fn withdraw(
 
     tx.commit().await.expect("Failed to commit transaction");
 
+    // Update metrics
+    let metrics = metrics.write().await;
+    metrics.total_withdrawals.inc();
+    metrics.transaction_amount.observe(withdraw_req.amount);
+    metrics
+        .total_wallet_balance
+        .set((new_balance * 100.0) as i64);
+    metrics
+        .api_latency
+        .observe(start_time.elapsed().as_secs_f64());
+
     HttpResponse::Ok().json(json!({
         "user_id": withdraw_req.user_id,
         "currency": withdraw_req.currency,
@@ -312,6 +423,17 @@ async fn withdraw(
 
 struct AppState {
     pool: Pool<Postgres>,
+    metrics: SharedMetrics,
+    registry: Registry,
+}
+
+#[actix_web::get("/metrics")]
+async fn metrics_handler(app_state: web::Data<AppState>) -> HttpResponse {
+    let mut buffer = String::new();
+    encode(&mut buffer, &app_state.registry).unwrap();
+    HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer)
 }
 
 #[actix_web::main]
@@ -325,7 +447,17 @@ async fn main() -> std::io::Result<()> {
 
     info!("Starting the wallet service");
     let pool = establish_connection().await;
-    let app_state = web::Data::new(AppState { pool });
+
+    // Initialize Prometheus registry and metrics
+    let mut registry = Registry::default();
+    let metrics = Metrics::new(&mut registry);
+    let metrics = Arc::new(RwLock::new(metrics));
+
+    let app_state = web::Data::new(AppState {
+        pool,
+        metrics: metrics.clone(),
+        registry,
+    });
 
     info!("Starting HTTP server on 0.0.0.0:8080");
     HttpServer::new(move || {
@@ -340,6 +472,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
             .service(update_user_details)
+            .service(metrics_handler)
     })
     .bind("0.0.0.0:8080")?
     .run()

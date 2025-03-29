@@ -47,7 +47,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /app/target/release/server /app/
 COPY --from=builder /app/.env* /app/
 
-EXPOSE 3000
+EXPOSE 3000 9092
 
 CMD ["./server"]
 

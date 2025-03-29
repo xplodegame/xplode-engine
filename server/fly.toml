@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for mines-game007 on 2025-03-17T14:49:16+05:30
+# fly.toml app configuration file generated for mines-game007 on 2025-03-29T17:39:11+05:30
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -41,22 +41,44 @@ primary_region = 'bom'
     timeout = '2s'
     grace_period = '1s'
 
-[regions]
-primary = ["bom", "iad"]
+[[services]]
+  protocol = 'tcp'
+  internal_port = 9092
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
+
+  [services.concurrency]
+    type = 'connections'
+    hard_limit = 1000
+    soft_limit = 800
+
+  [[services.http_checks]]
+    interval = '30s'
+    timeout = '2s'
+    grace_period = '30s'
+    method = 'get'
+    path = '/health'
+    protocol = 'http'
 
 [[vm]]
-  count = 2
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-  region = "bom"
 
 [[vm]]
-  count = 2
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-  region = "iad"
 
 [[metrics]]
   port = 9091
