@@ -606,11 +606,13 @@ impl GameServer {
                     player_id,
                     name,
                 } => {
+                    info!("Join request received at server: {}", server_id);
                     info!("Request to join:: {:?} game", game_id);
 
                     // let games_read = registry.games.read().await;
                     // let game_state = games_read.get(&game_id);
                     let game_state = registry.get_game_state(&game_id).await;
+                    info!("Game state: {:?}", game_state);
                     if let Some(GameState::WAITING {
                         game_id,
                         creator,
