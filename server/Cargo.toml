@@ -25,3 +25,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 dotenv.workspace = true
 warp.workspace = true
+urlencoding = "2.1.3"

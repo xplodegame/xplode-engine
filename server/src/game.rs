@@ -9,6 +9,7 @@ use futures_util::{
     SinkExt,
 };
 
+use http::HeaderValue;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,6 +18,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::{
         broadcast::{self},
@@ -24,7 +26,7 @@ use tokio::{
     },
 };
 use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
-use tracing::info;
+use tracing::{error, info};
 
 use uuid::Uuid;
 
@@ -160,6 +162,7 @@ impl GameRegistry {
     pub async fn get_game_state(&self, game_id: &str) -> Option<GameState> {
         // Only check in-memory state since we don't store in Redis anymore
         let games_read = self.games.read().await;
+        info!("Game keys: {:?}", games_read.keys().len());
         games_read.get(game_id).cloned()
     }
 
@@ -255,6 +258,7 @@ impl GameRegistry {
         bombs: u32,
         grid: u32,
     ) -> Result<Option<GameState>> {
+        info!("Handling play message");
         // First check if player is already in a game
         let active_players_read = self.active_players.read().await;
         if active_players_read.contains(&player_id) {
@@ -354,6 +358,10 @@ impl GameRegistry {
         };
         self.discovery.register_game_session(session).await?;
 
+        info!("Storing game state in local state");
+        info!("--------------------------------");
+        info!("Game state: {:?}", game_state);
+        info!("--------------------------------");
         // Store in local state
         let mut games_write = self.games.write().await;
         games_write.insert(game_id.clone(), game_state.clone());
@@ -387,7 +395,6 @@ impl GameServer {
         while let std::result::Result::Ok((stream, _)) = listener.accept().await {
             let registry = self.registry.clone();
             let server_id = self.server_id.clone();
-
             tokio::spawn(async move {
                 info!("Establishing connection");
                 if let Err(e) = GameServer::handle_connection(server_id, registry, stream).await {
@@ -402,8 +409,44 @@ impl GameServer {
     async fn handle_connection(
         server_id: String,
         registry: GameRegistry,
-        stream: TcpStream,
+        mut stream: TcpStream,
     ) -> anyhow::Result<()> {
+        // Read the HTTP request to check for cookies before accepting WebSocket connection
+        let mut buf = [0; 8192];
+        let n = stream.peek(&mut buf).await?;
+        let data = &buf[..n];
+
+        // Extract machine ID and handle redirection
+        if let Some(target_machine_id) = extract_machine_id(&data, &server_id) {
+            info!(
+                "Redirecting WebSocket connection to machine: {}",
+                target_machine_id
+            );
+
+            // Complete HTTP response with proper headers
+            let response = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\n\
+             fly-replay: instance={}\r\n\
+             Content-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+                target_machine_id
+            );
+
+            match stream.write_all(response.as_bytes()).await {
+                Ok(_) => {
+                    info!("Sent redirect response successfully");
+                    // Make sure to flush the stream
+                    if let Err(e) = stream.flush().await {
+                        error!("Error flushing redirect response: {}", e);
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("Error sending redirect response: {}", e);
+                    return Err(anyhow::anyhow!("Failed to send redirect response: {}", e));
+                }
+            }
+        }
         let ws_stream = ServerBuilder::new().accept(stream).await?;
         let pool = establish_connection().await;
 
@@ -575,6 +618,9 @@ impl GameServer {
                                     game_id: session.game_id,
                                     machine_id: session.server_id,
                                 };
+                                info!("--------------------------------");
+                                info!("Redirecting to server: {:?}", redirect);
+                                info!("--------------------------------");
                                 ws_write
                                     .lock()
                                     .await
@@ -606,13 +652,15 @@ impl GameServer {
                     player_id,
                     name,
                 } => {
-                    info!("Join request received at server: {}", server_id);
+                    info!("Join request at machine: {}", server_id);
                     info!("Request to join:: {:?} game", game_id);
 
                     // let games_read = registry.games.read().await;
-                    // let game_state = games_read.get(&game_id);
+                    // info!("Game keys: {:?}", games_read.keys().len());
                     let game_state = registry.get_game_state(&game_id).await;
+                    // let game_state = registry.get_game_state(&game_id).await;
                     info!("Game state: {:?}", game_state);
+                    info!("About to join game");
                     if let Some(GameState::WAITING {
                         game_id,
                         creator,
@@ -622,11 +670,13 @@ impl GameServer {
                         players,
                     }) = game_state
                     {
+                        info!("Inside waiting state");
                         let new_player = Player::new(player_id.clone(), name.clone());
                         let mut players = players.clone();
                         players.push(new_player);
 
                         // Update player count in Redis
+                        info!("Updating player count in Redis");
                         registry
                             .discovery
                             .update_player_count(&game_id, players.len() as u32)
@@ -637,8 +687,8 @@ impl GameServer {
                                 game_id: game_id.clone(),
                                 creator: creator.clone(),
                                 board: board.clone(),
-                                single_bet_size,
-                                min_players,
+                                single_bet_size: single_bet_size,
+                                min_players: min_players,
                                 players,
                             }
                         } else {
@@ -651,14 +701,17 @@ impl GameServer {
                                 players,
                                 board: board.clone(),
                                 turn_idx: 0,
-                                single_bet_size,
+                                single_bet_size: single_bet_size,
                                 locks: None,
                             }
                         };
+
                         let mut games_write = registry.games.write().await;
+
                         games_write.insert(game_id.clone(), new_game_state.clone());
 
-                        // need to subscribe so that this stream sink could receive messages
+                        drop(games_write);
+
                         registry
                             .subscribe_to_channel(
                                 server_id.clone(),
@@ -673,12 +726,13 @@ impl GameServer {
                             server_id: server_id.clone(),
                             game_message,
                         };
-
+                        info!("Publishing message to game");
                         registry
                             .publish_message(game_id.clone(), wrapper, false)
                             .await?;
                         let mut active_players_write = registry.active_players.write().await;
                         active_players_write.insert(player_id);
+                        info!("Player added to active players");
                     } else {
                         let response =
                             GameMessage::Error("this game is not accepting players".to_string());
@@ -917,10 +971,7 @@ impl GameServer {
 
                     if let Some(game_state) = games_write.get_mut(&game_id) {
                         if let GameState::RUNNING {
-                            game_id,
-                            turn_idx,
-                            players,
-                            ..
+                            turn_idx, players, ..
                         } = game_state
                         {
                             *turn_idx = (*turn_idx + 1) % players.len();
@@ -991,24 +1042,21 @@ impl GameServer {
                         }
                     }
                 }
-                GameMessage::RedirectToServer {
-                    game_id,
-                    machine_id,
-                } => {
+                GameMessage::RedirectToServer { .. } => {
                     unreachable!("Should fail if execution enters here");
-                    // Send the redirect message to the client
-                    let redirect = GameMessage::RedirectToServer {
-                        game_id,
-                        machine_id,
-                    };
-                    if let Err(e) = ws_write
-                        .lock()
-                        .await
-                        .send(Message::binary(serde_json::to_vec(&redirect)?))
-                        .await
-                    {
-                        eprintln!("Error sending redirect message: {}", e);
-                    }
+                    // // Send the redirect message to the client
+                    // let redirect = GameMessage::RedirectToServer {
+                    //     game_id,
+                    //     machine_id,
+                    // };
+                    // if let Err(e) = ws_write
+                    //     .lock()
+                    //     .await
+                    //     .send(Message::binary(serde_json::to_vec(&redirect)?))
+                    //     .await
+                    // {
+                    //     eprintln!("Error sending redirect message: {}", e);
+                    // }
                 }
                 _ => {}
             }
@@ -1044,3 +1092,118 @@ impl GameServer {
 //     )
 //     .await?;
 // }
+
+// Helper function to parse HTTP headers from a byte slice
+fn parse_http_headers(data: &[u8]) -> Result<HashMap<String, HeaderValue>, anyhow::Error> {
+    let mut headers = HashMap::new();
+
+    if let Ok(request_str) = std::str::from_utf8(data) {
+        // Split the request into lines
+        let lines: Vec<&str> = request_str.split("\r\n").collect();
+
+        // Skip the request line and parse headers
+        for line in lines.iter().skip(1) {
+            if line.is_empty() {
+                break; // End of headers
+            }
+
+            if let Some(idx) = line.find(':') {
+                let key = line[..idx].trim().to_lowercase();
+                let value = line[idx + 1..].trim();
+
+                if let Ok(header_value) = HeaderValue::from_str(value) {
+                    headers.insert(key, header_value);
+                }
+            }
+        }
+    }
+
+    Ok(headers)
+}
+
+// Helper function to parse cookies from a header value
+fn parse_cookies(cookie_header: Option<&HeaderValue>) -> HashMap<String, String> {
+    let mut cookies = HashMap::new();
+
+    if let Some(header) = cookie_header {
+        if let Ok(cookie_str) = header.to_str() {
+            for cookie_pair in cookie_str.split(';') {
+                let mut parts = cookie_pair.trim().splitn(2, '=');
+                if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
+                    cookies.insert(name.trim().to_string(), value.trim().to_string());
+                }
+            }
+        }
+    }
+
+    cookies
+}
+
+// Function to parse the HTTP request URI from raw bytes
+fn parse_request_uri(data: &[u8]) -> Option<String> {
+    if let Ok(request_str) = std::str::from_utf8(data) {
+        // HTTP request first line format: "GET /path?query HTTP/1.1"
+        let first_line = request_str.lines().next()?;
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+
+        if parts.len() >= 2 {
+            return Some(parts[1].to_string());
+        }
+    }
+    None
+}
+
+// Parse query parameters from a URI string
+fn parse_query_string(query: &str) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+
+    for param_pair in query.split('&') {
+        let mut pair = param_pair.split('=');
+        if let (Some(key), Some(value)) = (pair.next(), pair.next()) {
+            // URL decode the key and value
+            if let (Ok(decoded_key), Ok(decoded_value)) =
+                (urlencoding::decode(key), urlencoding::decode(value))
+            {
+                params.insert(decoded_key.into_owned(), decoded_value.into_owned());
+            } else {
+                // Fall back to raw values if decoding fails
+                params.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    params
+}
+
+// Extract the machine ID from a WebSocket request
+fn extract_machine_id(data: &[u8], server_id: &str) -> Option<String> {
+    info!("Extracting machine ID");
+    // Try to get machine ID from URL parameter
+    if let Some(uri) = parse_request_uri(data) {
+        info!("URI: {}", uri);
+        if let Some(query_pos) = uri.find('?') {
+            let query = &uri[query_pos + 1..];
+            let params = parse_query_string(query);
+
+            if let Some(machine_id) = params.get("machine_id") {
+                // If request targets a different machine, return it
+                if machine_id != server_id {
+                    println!("Machine ID: {}", machine_id);
+                    return Some(machine_id.clone());
+                }
+            }
+        }
+    }
+
+    // Try to get machine ID from cookies as fallback
+    if let Ok(headers) = parse_http_headers(data) {
+        let cookies = parse_cookies(headers.get("cookie"));
+        if let Some(machine_id) = cookies.get("fly-machine-id") {
+            if machine_id != server_id {
+                return Some(machine_id.clone());
+            }
+        }
+    }
+
+    None
+}
