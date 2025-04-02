@@ -20,6 +20,10 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
 
+mod auth;
+mod config;
+mod security;
+
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
     req: web::Json<UserDetailsRequest>,
