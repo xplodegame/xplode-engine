@@ -278,13 +278,6 @@ async fn withdraw(
     .await
     .expect("Error updating wallet balance");
 
-    // // Generate transaction hash for withdrawal
-    // let timestamp = SystemTime::now()
-    //     .duration_since(SystemTime::UNIX_EPOCH)
-    //     .unwrap()
-    //     .as_millis();
-    // let tx_hash = format!("withdraw_{}", timestamp);
-
     // Record the transaction
     sqlx::query(
         "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) 
@@ -345,20 +338,3 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-
-// async fn start_account_watchers(pool: sqlx::Pool<sqlx::Sqlite>, tx: mpsc::Sender<Pubkey>) {
-//     let mut conn = pool.acquire().await.expect("DB Connection failed");
-
-//     loop
-//     let users: Vec<User> = sqlx::query_as("SELECT user_pda FROM users")
-//         .fetch_all(&mut conn)
-//         .await
-//         .expect("Failed to fetch users");
-
-//     for user in users {
-//         let account_pubkey = Pubkey::from_str(&user.user_pda).expect("Invalid pubkey");
-//         tx.send(account_pubkey)
-//             .await
-//             .expect("Failed to send account to channel");
-//     }
-// }
