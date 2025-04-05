@@ -1,7 +1,7 @@
 use anyhow::Result;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
-use std::{env, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,16 +11,19 @@ pub struct GameSession {
     pub single_bet_size: f64,
     pub min_players: u32,
     pub current_players: u32,
+    pub grid_size: u32,
 }
 
 #[derive(Clone)]
 pub struct DiscoveryService {
-    redis: redis::Client,
+    redis: Arc<Client>,
 }
 
 impl DiscoveryService {
-    pub fn new(redis: redis::Client) -> Self {
-        Self { redis }
+    pub fn new(redis: Client) -> Self {
+        Self {
+            redis: Arc::new(redis),
+        }
     }
 
     // Register a new game session
@@ -43,18 +46,20 @@ impl DiscoveryService {
                 ("single_bet_size", session.single_bet_size.to_string()),
                 ("min_players", session.min_players.to_string()),
                 ("current_players", session.current_players.to_string()),
+                ("grid_size", session.grid_size.to_string()),
             ],
         );
 
         // Add to matchmaking set
         let matchmaking_key = format!(
-            "matchmaking:{}:{}",
-            session.single_bet_size, session.min_players
+            "matchmaking:{}:{}:{}",
+            session.single_bet_size, session.min_players, session.grid_size
         );
-        pipe.sadd(matchmaking_key, session.game_id);
+        pipe.sadd(matchmaking_key.clone(), session.game_id);
+        pipe.expire(matchmaking_key, 120);
 
         // Set TTL for cleanup
-        pipe.expire(&key, 300);
+        pipe.expire(&key, 120);
 
         // Execute all commands in a single round trip
         let pipeline_start = Instant::now();
@@ -73,11 +78,55 @@ impl DiscoveryService {
         Ok(())
     }
 
+    pub async fn find_game_session_by_id(&self, game_id: &str) -> Result<Option<GameSession>> {
+        info!("Finding game session by id: {}", game_id);
+        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let key = format!("game_session:{}", game_id);
+        let values: Option<Vec<String>> = conn
+            .hget(
+                &key,
+                &[
+                    "server_id",
+                    "single_bet_size",
+                    "min_players",
+                    "current_players",
+                    "grid_size",
+                ],
+            )
+            .await?;
+
+        info!("Here 1");
+        // Return None if values is None or doesn't have exactly 5 elements
+        let values = match values {
+            Some(v) if v.len() == 5 => v,
+            _ => return Ok(None),
+        };
+
+        // Parse values and create session
+        let session = GameSession {
+            game_id: game_id.to_string(),
+            server_id: values[0].clone(),
+            single_bet_size: values[1].parse()?,
+            min_players: values[2].parse()?,
+            current_players: values[3].parse()?,
+            grid_size: values[4].parse()?,
+        };
+
+        info!("Here 2");
+        // Only return the session if it has room for more players
+        Ok(if session.current_players < session.min_players {
+            Some(session)
+        } else {
+            None
+        })
+    }
+
     // Find best matching game session based on bet size and player count
     pub async fn find_game_session(
         &self,
         single_bet_size: f64,
         min_players: u32,
+        grid_size: u32,
     ) -> Result<Option<GameSession>> {
         info!("Finding game session");
         let start = Instant::now();
@@ -85,7 +134,11 @@ impl DiscoveryService {
         let conn_time = start.elapsed();
 
         // Get a random game ID from the matchmaking set
-        let matchmaking_key = format!("matchmaking:{}:{}", single_bet_size, min_players);
+        let matchmaking_key = format!(
+            "matchmaking:{}:{}:{}",
+            single_bet_size, min_players, grid_size
+        );
+
         let game_id: Option<String> = conn.srandmember(&matchmaking_key).await?;
         let pipeline_time = start.elapsed();
 
@@ -102,18 +155,20 @@ impl DiscoveryService {
                         "single_bet_size",
                         "min_players",
                         "current_players",
+                        "grid_size",
                     ],
                 )
                 .await?;
 
             if let Some(values) = values {
-                if values.len() == 4 {
+                if values.len() == 5 {
                     let session = GameSession {
                         game_id: game_id.to_string(),
                         server_id: values[0].clone(),
                         single_bet_size: values[1].parse()?,
                         min_players: values[2].parse()?,
                         current_players: values[3].parse()?,
+                        grid_size: values[4].parse()?,
                     };
                     if session.current_players < min_players {
                         Some(session)
@@ -137,6 +192,7 @@ impl DiscoveryService {
             found_game = %game_id.is_some(),
             bet_size = %single_bet_size,
             min_players = %min_players,
+            grid_size = %grid_size,
             conn_latency_ms = %conn_time.as_millis(),
             pipeline_latency_ms = %pipeline_time.as_millis(),
             session_fetch_latency_ms = %session_fetch_time.as_millis(),
@@ -180,14 +236,16 @@ impl DiscoveryService {
                     "single_bet_size",
                     "min_players",
                     "current_players",
+                    "grid_size",
                 ],
             )
             .await?;
 
         if let Some(values) = values {
-            if values.len() == 4 {
+            if values.len() == 5 {
                 // Remove from matchmaking set
-                let matchmaking_key = format!("matchmaking:{}:{}", values[1], values[2]);
+                let matchmaking_key =
+                    format!("matchmaking:{}:{}:{}", values[1], values[2], values[4]);
                 pipe.srem(matchmaking_key, game_id);
             }
         }
