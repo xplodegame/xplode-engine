@@ -1,13 +1,11 @@
-use std::{env, fs, time::SystemTime};
-
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
     db,
-    models::{self, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
     utils::{
-        self, Currency, DepositRequest, Network, UpdateUserDetailsRequest, UserDetailsRequest,
-        WalletType, WithdrawRequest,
+        self, Currency, DepositRequest, UpdateUserDetailsRequest, UserDetailsRequest, WalletType,
+        WithdrawRequest,
     },
 };
 use db::establish_connection;

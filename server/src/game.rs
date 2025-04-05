@@ -12,11 +12,7 @@ use futures_util::{
 use http::HeaderValue;
 use redis::Client;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-    sync::Arc,
-};
+use std::{collections::HashMap, env, sync::Arc};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -119,7 +115,7 @@ pub struct GameMessageWrapper {
 #[derive(Clone)]
 pub struct GameRegistry {
     games: Arc<RwLock<HashMap<String, GameState>>>,
-    active_players: Arc<RwLock<HashSet<String>>>,
+    active_players: Arc<RwLock<HashMap<String, String>>>,
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
     // redis: redis::Client,
@@ -133,7 +129,7 @@ impl GameRegistry {
     pub fn new(redis: redis::Client, server_id: String) -> Self {
         Self {
             games: Arc::new(RwLock::new(HashMap::new())),
-            active_players: Arc::new(RwLock::new(HashSet::new())),
+            active_players: Arc::new(RwLock::new(HashMap::new())),
             game_channels: Arc::new(RwLock::new(HashMap::new())),
             broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
             // redis: redis.clone(),
@@ -261,7 +257,7 @@ impl GameRegistry {
         info!("Handling play message");
         // First check if player is already in a game
         let active_players_read = self.active_players.read().await;
-        if active_players_read.contains(&player_id) {
+        if active_players_read.contains_key(&player_id) {
             return Ok(None);
         }
         drop(active_players_read);
@@ -270,7 +266,7 @@ impl GameRegistry {
         // let current_region = env::var("FLY_REGION").unwrap_or_else(|_| "unknown".to_string());
         if let Some(session) = self
             .discovery
-            .find_game_session(single_bet_size, min_players)
+            .find_game_session(single_bet_size, min_players, grid)
             .await?
         {
             // If the session is on this server, get it from local state
@@ -355,6 +351,7 @@ impl GameRegistry {
             single_bet_size,
             min_players,
             current_players: 1,
+            grid_size: grid,
         };
         self.discovery.register_game_session(session).await?;
 
@@ -460,12 +457,12 @@ impl GameServer {
 
         // Keep track of the current player_id for cleanup
         let current_player_id = Arc::new(RwLock::new(String::new()));
-        let registry_clone = registry.clone();
 
         // Spawn a task to handle incoming WebSocket messages
         let _ = tokio::spawn({
             let server_tx = server_tx.clone();
             let current_player_id = current_player_id.clone();
+            let registry_clone = registry.clone();
             async move {
                 while let Some(msg) = ws_read.next().await {
                     info!("Incoming msg");
@@ -506,6 +503,35 @@ impl GameServer {
                 // WebSocket connection closed - clean up the player
                 let player_id = current_player_id.read().await.clone();
                 if !player_id.is_empty() {
+                    let server_tx_inner = server_tx.clone();
+                    let active_players_read = registry_clone.active_players.read().await;
+                    let game_id = active_players_read.get(&player_id);
+                    if let Some(game_id) = game_id {
+                        let game_state = registry_clone.get_game_state(&game_id).await;
+                        if let Some(GameState::RUNNING {
+                            game_id,
+                            players,
+                            board,
+                            single_bet_size,
+                            ..
+                        }) = game_state
+                        {
+                            let loser_idx = players.iter().position(|p| p.id == player_id).unwrap();
+                            let new_game_state = GameState::FINISHED {
+                                game_id,
+                                loser_idx,
+                                board,
+                                players,
+                                single_bet_size,
+                            };
+
+                            let game_message = GameMessage::GameUpdate(new_game_state);
+
+                            server_tx_inner.send(game_message).await.unwrap();
+                        }
+                    }
+                    drop(active_players_read);
+                    info!("Cleaning up player: {}", player_id);
                     registry_clone.cleanup_player(&player_id).await;
                 }
             }
@@ -516,15 +542,19 @@ impl GameServer {
                 GameMessage::Ping { game_id, player_id } => {
                     info!("Pong sent from {}", server_id);
                     info!("Pong set from {}", server_id);
-                    if let Some(game_id) = game_id {
+                    if let Some(game_id) = &game_id {
                         registry
-                            .subscribe_to_channel(server_id.clone(), game_id, ws_write.clone())
+                            .subscribe_to_channel(
+                                server_id.clone(),
+                                game_id.clone(),
+                                ws_write.clone(),
+                            )
                             .await?;
                     }
 
                     if let Some(player_id) = player_id {
                         let mut active_players_write = registry.active_players.write().await;
-                        active_players_write.insert(player_id);
+                        active_players_write.insert(player_id, game_id.unwrap());
                     }
                     let response = "Pong".to_string();
                     if let Err(e) = ws_write
@@ -547,7 +577,8 @@ impl GameServer {
                     info!("Play request at machine: {}", server_id);
                     let active_players_read = registry.active_players.read().await;
 
-                    if active_players_read.contains(&player_id) {
+                    if active_players_read.contains_key(&player_id) {
+                        info!("Player is already waiting for a game");
                         let response =
                             GameMessage::Error("You are already waiting for a game".to_string());
                         ws_write
@@ -605,13 +636,13 @@ impl GameServer {
                                 .await?;
 
                             let mut active_players_write = registry.active_players.write().await;
-                            active_players_write.insert(player_id);
+                            active_players_write.insert(player_id, game_id);
                         }
                         Ok(None) => {
                             // Game exists on another server, send redirect message
                             if let Some(session) = registry
                                 .discovery
-                                .find_game_session(single_bet_size, min_players)
+                                .find_game_session(single_bet_size, min_players, grid)
                                 .await?
                             {
                                 let redirect = GameMessage::RedirectToServer {
@@ -731,18 +762,41 @@ impl GameServer {
                             .publish_message(game_id.clone(), wrapper, false)
                             .await?;
                         let mut active_players_write = registry.active_players.write().await;
-                        active_players_write.insert(player_id);
+                        active_players_write.insert(player_id, game_id);
                         info!("Player added to active players");
                     } else {
-                        let response =
-                            GameMessage::Error("this game is not accepting players".to_string());
-                        if let Err(err) = ws_write
-                            .lock()
-                            .await
-                            .send(Message::binary(serde_json::to_vec(&response)?))
-                            .await
-                        {
-                            eprintln!("Failed to send error message to the client:: {:?}", err);
+                        let game_session =
+                            match registry.discovery.find_game_session_by_id(&game_id).await {
+                                Ok(session) => session,
+                                Err(_) => None,
+                            };
+                        if let Some(game_session) = game_session {
+                            let redirect = GameMessage::RedirectToServer {
+                                game_id: game_session.game_id,
+                                machine_id: game_session.server_id,
+                            };
+                            info!("Redirecting to server: {:?}", redirect);
+                            if let Err(err) = ws_write
+                                .lock()
+                                .await
+                                .send(Message::binary(serde_json::to_vec(&redirect)?))
+                                .await
+                            {
+                                eprintln!("Failed to send error message to the client:: {:?}", err);
+                            }
+                        } else {
+                            info!("Game is not accepting players");
+                            let response = GameMessage::Error(
+                                "this game is not accepting players".to_string(),
+                            );
+                            if let Err(err) = ws_write
+                                .lock()
+                                .await
+                                .send(Message::binary(serde_json::to_vec(&response)?))
+                                .await
+                            {
+                                eprintln!("Failed to send error message to the client:: {:?}", err);
+                            }
                         }
                     }
                 }
@@ -775,7 +829,7 @@ impl GameServer {
 
                                 let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
 
-                                active_players_write.retain(|x| !ids.contains(x));
+                                active_players_write.retain(|x, _| !ids.contains(x));
 
                                 // Update discovery service
                                 registry
@@ -815,12 +869,31 @@ impl GameServer {
                     } else {
                         // Game is being aborted
                         if let Some(game_state) = games_write.get_mut(&game_id) {
-                            if let GameState::RUNNING { players, .. } = game_state {
-                                // remove players from active state
-                                let mut active_players_write =
-                                    registry.active_players.write().await;
-                                let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-                                active_players_write.retain(|x| !ids.contains(x));
+                            // if let GameState::RUNNING { players, .. } = game_state {
+                            //     // remove players from active state
+                            //     let mut active_players_write =
+                            //         registry.active_players.write().await;
+                            //     let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                            //     active_players_write.retain(|x, _| !ids.contains(x));
+                            // }
+                            match game_state {
+                                GameState::RUNNING { players, .. } => {
+                                    let mut active_players_write =
+                                        registry.active_players.write().await;
+                                    let ids =
+                                        players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                                    active_players_write.retain(|x, _| !ids.contains(x));
+                                }
+                                GameState::WAITING { players, .. } => {
+                                    let mut active_players_write =
+                                        registry.active_players.write().await;
+                                    let ids =
+                                        players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                                    active_players_write.retain(|x, _| !ids.contains(x));
+                                }
+                                _ => {
+                                    // Do nothing
+                                }
                             }
 
                             let aborted_state = GameState::ABORTED {
@@ -892,7 +965,7 @@ impl GameServer {
                                         .map(|p| p.id.clone())
                                         .collect::<Vec<_>>();
 
-                                    active_players_write.retain(|x| !ids.contains(x));
+                                    active_players_write.retain(|x, _| !ids.contains(x));
 
                                     // Update discovery service
                                     registry
@@ -1013,6 +1086,13 @@ impl GameServer {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
+
+                            // / remove players from active state
+                            let mut active_players_write = registry.active_players.write().await;
+
+                            let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+
+                            active_players_write.retain(|x, _| !ids.contains(x));
                             // Update the db
                             let winning_amount = single_bet_size / ((players.len() - 1) as f64);
 
