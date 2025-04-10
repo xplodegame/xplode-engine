@@ -56,7 +56,6 @@ impl DiscoveryService {
             session.single_bet_size, session.min_players, session.grid_size
         );
         pipe.sadd(matchmaking_key.clone(), session.game_id);
-        pipe.expire(matchmaking_key, 120);
 
         // Set TTL for cleanup
         pipe.expire(&key, 120);
