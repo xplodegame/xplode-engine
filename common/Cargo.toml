@@ -12,3 +12,4 @@ dotenv.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+reqwest.workspace = true

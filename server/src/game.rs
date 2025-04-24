@@ -1,6 +1,7 @@
 use anyhow::Result;
 use common::{
     db::{self, establish_connection},
+    telegram::send_telegram_message,
     utils::Currency,
 };
 use futures_util::{
@@ -343,6 +344,19 @@ impl GameRegistry {
             min_players,
             players: vec![player.clone()],
         };
+
+        info!("--------------------------------");
+        info!("Ahoy");
+        info!("--------------------------------");
+        // Send Telegram notification
+        let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
+        let notification_message = format!(
+            "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}",
+            game_url, name, single_bet_size, min_players, grid, grid, bombs
+        );
+        if let Err(e) = send_telegram_message(&notification_message).await {
+            error!("Failed to send Telegram notification: {}", e);
+        }
 
         // Register the new game session
         let session = GameSession {

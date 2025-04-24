@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::{
     models::{LeaderboardEntry, User, Wallet},
-    utils::{Currency, Network},
+    utils::Currency,
 };
 
 pub async fn establish_connection() -> Pool<Postgres> {

@@ -3,6 +3,7 @@ use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responde
 use common::{
     db,
     models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    telegram,
     utils::{
         self, Currency, DepositRequest, UpdateUserDetailsRequest, UserDetailsRequest, WalletType,
         WithdrawRequest,
@@ -14,7 +15,7 @@ use dotenv::dotenv;
 use evm_deposits::transfer_funds;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
 
@@ -224,6 +225,19 @@ async fn deposit(
     .expect("Error recording transaction");
 
     tx.commit().await.expect("Failed to commit transaction");
+
+    // Send Telegram notification about the deposit
+    let message = format!(
+        "💰 New Deposit!\nUser ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
+        deposit_request.user_id,
+        deposit_request.amount,
+        deposit_request.currency,
+        deposit_request.tx_hash
+    );
+
+    if let Err(e) = telegram::send_telegram_message(&message).await {
+        error!("Failed to send Telegram notification: {}", e);
+    }
 
     HttpResponse::Ok().json(json!({
         "user_id": deposit_request.user_id,
