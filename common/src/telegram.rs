@@ -1,6 +1,5 @@
 use anyhow::Result;
 use serde::Serialize;
-use std::env;
 use tracing::{error, info};
 
 const TELEGRAM_API_URL: &str = "https://api.telegram.org/bot";
