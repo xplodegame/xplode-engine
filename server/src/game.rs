@@ -58,6 +58,13 @@ pub enum GameState {
         players: Vec<Player>,
         single_bet_size: f64,
     },
+    REMATCH {
+        game_id: String,
+        players: Vec<Player>,
+        board: Board,
+        single_bet_size: f64,
+        accepted: Vec<usize>,
+    },
     // During the start, user doesn't make a move for some predefined time
     ABORTED {
         game_id: String,
@@ -105,6 +112,19 @@ pub enum GameMessage {
     RedirectToServer {
         game_id: String,
         machine_id: String,
+    },
+    Rematch {
+        game_id: String,
+        player_id: String,
+    },
+    RematchRequest {
+        game_id: String,
+        requester: String,
+    },
+    RematchResponse {
+        game_id: String,
+        player_id: String,
+        want_rematch: bool,
     },
 }
 
@@ -209,7 +229,13 @@ impl GameRegistry {
         game_message_wrapper: GameMessageWrapper,
         _from_redis: bool, // Not needed anymore since we're local only
     ) -> Result<()> {
+        info!("--------------------------------");
+        info!("Publishing message to channel: {:?}", channel);
+        info!("--------------------------------");
         if let Some(broadcast_tx) = self.broadcast_channels.read().await.get(&channel) {
+            info!("--------------------------------");
+            info!("Sending message to channel: {:?}", channel);
+            info!("--------------------------------");
             let _ = broadcast_tx.send(game_message_wrapper.game_message);
         }
         Ok(())
@@ -348,14 +374,17 @@ impl GameRegistry {
         info!("--------------------------------");
         info!("Ahoy");
         info!("--------------------------------");
-        // Send Telegram notification
-        let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
-        let notification_message = format!(
+
+        if env::var("ENVIRONMENT").unwrap_or_else(|_| "production".to_string()) == "production" {
+            // Send Telegram notification.
+            let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
+            let notification_message = format!(
             "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}",
             game_url, name, single_bet_size, min_players, grid, grid, bombs
         );
-        if let Err(e) = send_telegram_message(&notification_message).await {
-            error!("Failed to send Telegram notification: {}", e);
+            if let Err(e) = send_telegram_message(&notification_message).await {
+                error!("Failed to send Telegram notification: {}", e);
+            }
         }
 
         // Register the new game session
@@ -1075,6 +1104,124 @@ impl GameServer {
                             .await?;
                     }
                 }
+
+                GameMessage::RematchRequest { game_id, requester } => {
+                    info!("--------------------------------");
+                    info!("Rematch request received");
+                    info!("--------------------------------");
+                    let mut games_write = registry.games.write().await;
+                    if let Some(game_state) = games_write.get_mut(&game_id) {
+                        if let GameState::FINISHED {
+                            game_id,
+                            board,
+                            players,
+                            single_bet_size,
+                            ..
+                        } = game_state
+                        {
+                            let grid = board.n;
+                            let bombs = board.bomb_coordinates.len();
+                            let new_board = Board::new(grid as usize, bombs as usize);
+
+                            let (index, player) = players
+                                .iter()
+                                .enumerate()
+                                .find(|(idx, p)| *p.id == requester)
+                                .expect("Failed to find player id in player array");
+
+                            let mut rematch_acceptants = vec![0 as usize; players.len()];
+                            rematch_acceptants[index] = 1;
+                            let new_game_state = GameState::REMATCH {
+                                game_id: game_id.clone(),
+                                players: players.clone(),
+                                board: new_board,
+                                single_bet_size: single_bet_size.clone(),
+                                accepted: rematch_acceptants,
+                            };
+
+                            let game_message = GameMessage::RematchRequest {
+                                game_id: game_id.clone(),
+                                requester: requester.clone(),
+                            };
+
+                            let wrapper = GameMessageWrapper {
+                                server_id: server_id.clone(),
+                                game_message,
+                            };
+
+                            registry
+                                .publish_message(game_id.clone(), wrapper.clone(), false)
+                                .await?;
+
+                            *game_state = new_game_state.clone();
+                        }
+                    }
+                }
+
+                GameMessage::RematchResponse {
+                    game_id,
+                    player_id,
+                    want_rematch,
+                } => {
+                    let mut games_write = registry.games.write().await;
+                    if let Some(game_state) = games_write.get_mut(&game_id) {
+                        if let GameState::REMATCH {
+                            game_id,
+                            players,
+                            board,
+                            single_bet_size,
+                            accepted,
+                        } = game_state
+                        {
+                            if want_rematch {
+                                let (index, player) = players
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, p)| *p.id == player_id)
+                                    .expect("Failed to find player id in player array");
+
+                                accepted[index] = 1;
+
+                                if accepted.iter().all(|&x| x == 1) {
+                                    let new_game_state = GameState::RUNNING {
+                                        game_id: game_id.clone(),
+                                        players: players.clone(),
+                                        board: board.clone(),
+                                        turn_idx: 0,
+                                        single_bet_size: single_bet_size.clone(),
+                                        locks: None,
+                                    };
+
+                                    let game_message =
+                                        GameMessage::GameUpdate(new_game_state.clone());
+                                    let wrapper = GameMessageWrapper {
+                                        server_id: server_id.clone(),
+                                        game_message,
+                                    };
+
+                                    registry
+                                        .publish_message(game_id.clone(), wrapper.clone(), false)
+                                        .await?;
+                                    *game_state = new_game_state.clone();
+                                }
+                            } else {
+                                let new_game_state = GameState::ABORTED {
+                                    game_id: game_id.clone(),
+                                };
+                                let game_message = GameMessage::GameUpdate(new_game_state.clone());
+                                let wrapper = GameMessageWrapper {
+                                    server_id: server_id.clone(),
+                                    game_message,
+                                };
+
+                                registry
+                                    .publish_message(game_id.clone(), wrapper.clone(), false)
+                                    .await?;
+                            }
+                        }
+                    }
+                }
+
                 GameMessage::GameUpdate(msg) => {
                     // unreachable!("Should fail if execution enters here");
                     let game_message = GameMessage::GameUpdate(msg.clone());
@@ -1134,6 +1281,7 @@ impl GameServer {
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
                         }
+                        _ => {}
                     }
                 }
                 GameMessage::RedirectToServer { .. } => {
