@@ -59,7 +59,8 @@ pub enum GameState {
         single_bet_size: f64,
     },
     REMATCH {
-        game_id: String,
+        old_game_id: String,
+        new_game_id: String,
         players: Vec<Player>,
         board: Board,
         single_bet_size: f64,
@@ -67,6 +68,9 @@ pub enum GameState {
     },
     // During the start, user doesn't make a move for some predefined time
     ABORTED {
+        game_id: String,
+    },
+    RematchRejected {
         game_id: String,
     },
 }
@@ -119,7 +123,7 @@ pub enum GameMessage {
     },
     RematchRequest {
         game_id: String,
-        requester: String,
+        requester_id: String,
     },
     RematchResponse {
         game_id: String,
@@ -1105,7 +1109,10 @@ impl GameServer {
                     }
                 }
 
-                GameMessage::RematchRequest { game_id, requester } => {
+                GameMessage::RematchRequest {
+                    game_id,
+                    requester_id,
+                } => {
                     info!("--------------------------------");
                     info!("Rematch request received");
                     info!("--------------------------------");
@@ -1123,25 +1130,30 @@ impl GameServer {
                             let bombs = board.bomb_coordinates.len();
                             let new_board = Board::new(grid as usize, bombs as usize);
 
-                            let (index, player) = players
+                            let (index, _) = players
                                 .iter()
                                 .enumerate()
-                                .find(|(idx, p)| *p.id == requester)
+                                .find(|(_, p)| *p.id == requester_id)
                                 .expect("Failed to find player id in player array");
 
                             let mut rematch_acceptants = vec![0 as usize; players.len()];
                             rematch_acceptants[index] = 1;
+                            let new_game_id = Uuid::new_v4().to_string();
                             let new_game_state = GameState::REMATCH {
-                                game_id: game_id.clone(),
+                                old_game_id: game_id.clone(),
+                                new_game_id: new_game_id.clone(),
                                 players: players.clone(),
                                 board: new_board,
                                 single_bet_size: single_bet_size.clone(),
                                 accepted: rematch_acceptants,
                             };
 
+                            let mut active_players = registry.active_players.write().await;
+                            active_players.insert(requester_id.clone(), new_game_id.clone());
+
                             let game_message = GameMessage::RematchRequest {
-                                game_id: game_id.clone(),
-                                requester: requester.clone(),
+                                game_id: new_game_id.clone(),
+                                requester_id: requester_id.clone(),
                             };
 
                             let wrapper = GameMessageWrapper {
@@ -1166,15 +1178,16 @@ impl GameServer {
                     let mut games_write = registry.games.write().await;
                     if let Some(game_state) = games_write.get_mut(&game_id) {
                         if let GameState::REMATCH {
-                            game_id,
+                            new_game_id,
                             players,
                             board,
                             single_bet_size,
                             accepted,
+                            ..
                         } = game_state
                         {
                             if want_rematch {
-                                let (index, player) = players
+                                let (index, _) = players
                                     .iter()
                                     .enumerate()
                                     .find(|(_, p)| *p.id == player_id)
@@ -1182,9 +1195,12 @@ impl GameServer {
 
                                 accepted[index] = 1;
 
+                                let mut active_players = registry.active_players.write().await;
+                                active_players.insert(player_id.clone(), new_game_id.clone());
+
                                 if accepted.iter().all(|&x| x == 1) {
                                     let new_game_state = GameState::RUNNING {
-                                        game_id: game_id.clone(),
+                                        game_id: new_game_id.clone(),
                                         players: players.clone(),
                                         board: board.clone(),
                                         turn_idx: 0,
@@ -1205,7 +1221,10 @@ impl GameServer {
                                     *game_state = new_game_state.clone();
                                 }
                             } else {
-                                let new_game_state = GameState::ABORTED {
+                                let mut active_players = registry.active_players.write().await;
+                                active_players
+                                    .retain(|p, _| !players.iter().any(|player| player.id == *p));
+                                let new_game_state = GameState::RematchRejected {
                                     game_id: game_id.clone(),
                                 };
                                 let game_message = GameMessage::GameUpdate(new_game_state.clone());
@@ -1271,7 +1290,7 @@ impl GameServer {
                             )
                             .await?;
                         }
-                        GameState::ABORTED { game_id } => {
+                        GameState::RematchRejected { game_id } => {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
