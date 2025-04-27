@@ -1,4 +1,5 @@
 use actix_cors::Cors;
+use actix_web::dev::Service;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
     db,
@@ -12,12 +13,36 @@ use common::{
 use db::establish_connection;
 use dotenv::dotenv;
 
+use actix_web::http::header::{HeaderName, HeaderValue};
 use evm_deposits::transfer_funds;
 use serde_json::json;
 use sqlx::{Pool, Postgres};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
+
+// CSP header value
+const CSP_HEADER: &str = "default-src 'self'; \
+    script-src 'self' https://*.privy.io https://*.privy.io/embed.js 'unsafe-inline'; \
+    connect-src 'self' https://*.privy.io wss://*.privy.io; \
+    frame-src 'self' https://*.privy.io; \
+    style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: https://*.privy.io; \
+    font-src 'self' data:;";
+
+// CSP middleware implementation
+fn csp_middleware() -> actix_cors::Cors {
+    actix_cors::Cors::default()
+        .allow_any_origin()
+        .allow_any_method()
+        .allow_any_header()
+        .expose_headers(vec![
+            "Content-Security-Policy",
+            "X-Content-Security-Policy",
+            "X-WebKit-CSP",
+        ])
+        .max_age(3600)
+}
 
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
@@ -337,7 +362,38 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(app_state.clone())
             .wrap(Logger::default())
-            .wrap(Cors::permissive())
+            .wrap(csp_middleware())
+            .wrap_fn(|req, srv| {
+                let fut = srv.call(req);
+                async {
+                    let mut res = fut.await?;
+                    let headers = res.headers_mut();
+
+                    // Add security headers
+                    headers.insert(
+                        HeaderName::from_static("content-security-policy"),
+                        HeaderValue::from_static(CSP_HEADER),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("x-frame-options"),
+                        HeaderValue::from_static("DENY"),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("x-content-type-options"),
+                        HeaderValue::from_static("nosniff"),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("referrer-policy"),
+                        HeaderValue::from_static("strict-origin-when-cross-origin"),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("permissions-policy"),
+                        HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
+                    );
+
+                    Ok(res)
+                }
+            })
             .service(health_check)
             .service(deposit)
             .service(withdraw)
