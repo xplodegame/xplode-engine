@@ -411,6 +411,13 @@ impl GameRegistry {
 
         Ok(Some(game_state))
     }
+
+    // Add new method to clean up broadcast channels
+    pub async fn cleanup_broadcast_channel(&self, game_id: &str) {
+        let mut broadcast_channels = self.broadcast_channels.write().await;
+        broadcast_channels.remove(game_id);
+        info!("Cleaned up broadcast channel for game: {}", game_id);
+    }
 }
 
 pub struct GameServer {
@@ -553,6 +560,7 @@ impl GameServer {
                     let active_players_read = registry_clone.active_players.read().await;
                     let game_id = active_players_read.get(&player_id);
                     if let Some(game_id) = game_id {
+                        let game_id_clone = game_id.clone();
                         let game_state = registry_clone.get_game_state(&game_id).await;
                         if let Some(GameState::RUNNING {
                             game_id,
@@ -574,6 +582,11 @@ impl GameServer {
                             let game_message = GameMessage::GameUpdate(new_game_state);
 
                             server_tx_inner.send(game_message).await.unwrap();
+
+                            // Clean up broadcast channel since player has left
+                            registry_clone
+                                .cleanup_broadcast_channel(&game_id_clone)
+                                .await;
                         }
                     }
                     drop(active_players_read);
@@ -910,18 +923,13 @@ impl GameServer {
                                 registry
                                     .publish_message(game_id.clone(), wrapper, false)
                                     .await?;
+
+                                // dont clean up broadcast channel since game might be rematched
                             }
                         }
                     } else {
                         // Game is being aborted
                         if let Some(game_state) = games_write.get_mut(&game_id) {
-                            // if let GameState::RUNNING { players, .. } = game_state {
-                            //     // remove players from active state
-                            //     let mut active_players_write =
-                            //         registry.active_players.write().await;
-                            //     let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-                            //     active_players_write.retain(|x, _| !ids.contains(x));
-                            // }
                             match game_state {
                                 GameState::RUNNING { players, .. } => {
                                     let mut active_players_write =
@@ -961,6 +969,9 @@ impl GameServer {
                             registry
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
+
+                            // Clean up broadcast channel since game is aborted
+                            registry.cleanup_broadcast_channel(&game_id).await;
                         }
                     }
                 }
@@ -1233,6 +1244,9 @@ impl GameServer {
                                 registry
                                     .publish_message(game_id.clone(), wrapper.clone(), false)
                                     .await?;
+
+                                // Clean up broadcast channel since rematch was rejected
+                                registry.cleanup_broadcast_channel(&game_id).await;
                             }
                         }
                     }
