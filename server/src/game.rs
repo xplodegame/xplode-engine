@@ -59,8 +59,7 @@ pub enum GameState {
         single_bet_size: f64,
     },
     REMATCH {
-        old_game_id: String,
-        new_game_id: String,
+        game_id: String,
         players: Vec<Player>,
         board: Board,
         single_bet_size: f64,
@@ -1138,10 +1137,8 @@ impl GameServer {
 
                             let mut rematch_acceptants = vec![0 as usize; players.len()];
                             rematch_acceptants[index] = 1;
-                            let new_game_id = Uuid::new_v4().to_string();
                             let new_game_state = GameState::REMATCH {
-                                old_game_id: game_id.clone(),
-                                new_game_id: new_game_id.clone(),
+                                game_id: game_id.clone(),
                                 players: players.clone(),
                                 board: new_board,
                                 single_bet_size: single_bet_size.clone(),
@@ -1149,10 +1146,10 @@ impl GameServer {
                             };
 
                             let mut active_players = registry.active_players.write().await;
-                            active_players.insert(requester_id.clone(), new_game_id.clone());
+                            active_players.insert(requester_id.clone(), game_id.clone());
 
                             let game_message = GameMessage::RematchRequest {
-                                game_id: new_game_id.clone(),
+                                game_id: game_id.clone(),
                                 requester_id: requester_id.clone(),
                             };
 
@@ -1178,7 +1175,7 @@ impl GameServer {
                     let mut games_write = registry.games.write().await;
                     if let Some(game_state) = games_write.get_mut(&game_id) {
                         if let GameState::REMATCH {
-                            new_game_id,
+                            game_id,
                             players,
                             board,
                             single_bet_size,
@@ -1196,11 +1193,11 @@ impl GameServer {
                                 accepted[index] = 1;
 
                                 let mut active_players = registry.active_players.write().await;
-                                active_players.insert(player_id.clone(), new_game_id.clone());
+                                active_players.insert(player_id.clone(), game_id.clone());
 
                                 if accepted.iter().all(|&x| x == 1) {
                                     let new_game_state = GameState::RUNNING {
-                                        game_id: new_game_id.clone(),
+                                        game_id: game_id.clone(),
                                         players: players.clone(),
                                         board: board.clone(),
                                         turn_idx: 0,
