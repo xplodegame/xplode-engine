@@ -83,6 +83,7 @@ pub enum GameMessage {
         min_players: u32,
         bombs: u32,
         grid: u32,
+        is_creating_room: bool,
     },
     Join {
         game_id: String,
@@ -283,6 +284,7 @@ impl GameRegistry {
         min_players: u32,
         bombs: u32,
         grid: u32,
+        is_creating_room: bool,
     ) -> Result<Option<GameState>> {
         info!("Handling play message");
         // First check if player is already in a game
@@ -378,12 +380,12 @@ impl GameRegistry {
         info!("Ahoy");
         info!("--------------------------------");
 
-        if env::var("PROFILE").unwrap_or_else(|_| "prod".to_string()) == "prod" {
+        if env::var("PROFILE").unwrap_or_else(|_| "prod".to_string()) == "dev" {
             // Send Telegram notification.
             let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
             let notification_message = format!(
-            "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}",
-            game_url, name, single_bet_size, min_players, grid, grid, bombs
+            "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}\nIs Creating Room: {}",
+            game_url, name, single_bet_size, min_players, grid, grid, bombs, is_creating_room
         );
             if let Err(e) = send_telegram_message(&notification_message).await {
                 error!("Failed to send Telegram notification: {}", e);
@@ -632,6 +634,7 @@ impl GameServer {
                     min_players,
                     bombs,
                     grid,
+                    is_creating_room,
                 } => {
                     info!("Play request at machine: {}", server_id);
                     let active_players_read = registry.active_players.read().await;
@@ -658,6 +661,7 @@ impl GameServer {
                             min_players,
                             bombs,
                             grid,
+                            is_creating_room,
                         )
                         .await
                     {
