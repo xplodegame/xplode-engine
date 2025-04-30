@@ -1,4 +1,3 @@
 /target
+frontend-request.md
 .env
-.env.local
-.env.production
