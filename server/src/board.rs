@@ -13,10 +13,10 @@ pub enum CellState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {
-    n: usize, // it would be nXn
+    pub n: usize, // it would be nXn
     grid: Vec<Vec<CellState>>,
     //TODO: It should be either continuous or scattered
-    bomb_coordinates: Vec<u64>,
+    pub bomb_coordinates: Vec<u64>,
 }
 
 impl Board {
