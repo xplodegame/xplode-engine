@@ -378,7 +378,7 @@ impl GameRegistry {
         info!("Ahoy");
         info!("--------------------------------");
 
-        if env::var("ENVIRONMENT").unwrap_or_else(|_| "production".to_string()) == "production" {
+        if env::var("PROFILE").unwrap_or_else(|_| "prod".to_string()) == "prod" {
             // Send Telegram notification.
             let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
             let notification_message = format!(
