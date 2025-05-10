@@ -31,6 +31,7 @@ use crate::{
     board::Board,
     discovery::{DiscoveryService, GameSession},
     player::Player,
+    xplode_moves::XplodeMovesClient,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,13 @@ pub enum GameState {
     RematchRejected {
         game_id: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BlockchainUpdateType {
+    GameInitialized,
+    MoveRecorded,
+    GameCommitted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +138,11 @@ pub enum GameMessage {
         player_id: String,
         want_rematch: bool,
     },
+    BlockchainUpdate {
+        game_id: String,
+        update_type: BlockchainUpdateType,
+        transaction_hash: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,23 +156,27 @@ pub struct GameRegistry {
     active_players: Arc<RwLock<HashMap<String, String>>>,
     game_channels: Arc<RwLock<HashMap<String, Arc<mpsc::Sender<GameMessage>>>>>,
     broadcast_channels: Arc<RwLock<HashMap<String, broadcast::Sender<GameMessage>>>>,
-    // redis: redis::Client,
     discovery: DiscoveryService,
     server_id: String,
+    xplode_moves: XplodeMovesClient,
 }
 
 type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 impl GameRegistry {
     pub fn new(redis: redis::Client, server_id: String) -> Self {
+        let api_base = env::var("XPLODE_MOVES_API")
+            .unwrap_or_else(|_| "https://xplode-moves.fly.dev/api/game".to_string());
+        // let api_base = env::var("XPLODE_MOVES_API")
+        //     .unwrap_or_else(|_| "http://localhost:3004/api/game".to_string());
         Self {
             games: Arc::new(RwLock::new(HashMap::new())),
             active_players: Arc::new(RwLock::new(HashMap::new())),
             game_channels: Arc::new(RwLock::new(HashMap::new())),
             broadcast_channels: Arc::new(RwLock::new(HashMap::new())),
-            // redis: redis.clone(),
             discovery: DiscoveryService::new(redis),
             server_id,
+            xplode_moves: XplodeMovesClient::new(api_base),
         }
     }
 
@@ -342,6 +359,40 @@ impl GameRegistry {
                         // Game is transitioning to RUNNING state
                         // Remove from discovery since it's no longer accepting players
                         self.discovery.remove_game_session(&game_id).await?;
+
+                        // Initialize game on blockchain
+                        let registry_clone = self.clone();
+                        let game_id_clone = game_id.clone();
+                        let grid_size = board.n as u32;
+                        let bomb_positions: Vec<(usize, usize)> = board
+                            .bomb_coordinates
+                            .iter()
+                            .map(|&pos| {
+                                let x = (pos / board.n as u64) as usize;
+                                let y = (pos % board.n as u64) as usize;
+                                (x, y)
+                            })
+                            .collect();
+                        tokio::spawn(async move {
+                            if let Ok(tx_hash) = registry_clone
+                                .xplode_moves
+                                .initialize_game(&game_id_clone, grid_size, bomb_positions)
+                                .await
+                            {
+                                let update = GameMessage::BlockchainUpdate {
+                                    game_id: game_id_clone.clone(),
+                                    update_type: BlockchainUpdateType::GameInitialized,
+                                    transaction_hash: tx_hash,
+                                };
+                                let wrapper = GameMessageWrapper {
+                                    server_id: registry_clone.server_id.clone(),
+                                    game_message: update,
+                                };
+                                let _ = registry_clone
+                                    .publish_message(game_id_clone.clone(), wrapper, false)
+                                    .await;
+                            }
+                        });
 
                         GameState::RUNNING {
                             game_id: game_id.clone(),
@@ -576,9 +627,9 @@ impl GameServer {
                             let new_game_state = GameState::FINISHED {
                                 game_id,
                                 loser_idx,
-                                board,
-                                players,
-                                single_bet_size,
+                                board: board.clone(),
+                                players: players.clone(),
+                                single_bet_size: single_bet_size,
                             };
 
                             let game_message = GameMessage::GameUpdate(new_game_state);
@@ -790,6 +841,40 @@ impl GameServer {
                             // Remove from discovery since it's no longer accepting players
                             registry.discovery.remove_game_session(&game_id).await?;
 
+                            // Initialize game on blockchain
+                            let registry_clone = registry.clone();
+                            let game_id_clone = game_id.clone();
+                            let grid_size = board.n as u32;
+                            let bomb_positions: Vec<(usize, usize)> = board
+                                .bomb_coordinates
+                                .iter()
+                                .map(|&pos| {
+                                    let x = (pos / board.n as u64) as usize;
+                                    let y = (pos % board.n as u64) as usize;
+                                    (x, y)
+                                })
+                                .collect();
+                            tokio::spawn(async move {
+                                if let Ok(tx_hash) = registry_clone
+                                    .xplode_moves
+                                    .initialize_game(&game_id_clone, grid_size, bomb_positions)
+                                    .await
+                                {
+                                    let update = GameMessage::BlockchainUpdate {
+                                        game_id: game_id_clone.clone(),
+                                        update_type: BlockchainUpdateType::GameInitialized,
+                                        transaction_hash: tx_hash,
+                                    };
+                                    let wrapper = GameMessageWrapper {
+                                        server_id: registry_clone.server_id.clone(),
+                                        game_message: update,
+                                    };
+                                    let _ = registry_clone
+                                        .publish_message(game_id_clone.clone(), wrapper, false)
+                                        .await;
+                                }
+                            });
+
                             GameState::RUNNING {
                                 game_id: game_id.clone(),
                                 players,
@@ -886,6 +971,30 @@ impl GameServer {
                                     single_bet_size: *single_bet_size,
                                 };
 
+                                // Commit game on blockchain
+                                let registry_clone = registry.clone();
+                                let game_id_clone = game_id.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(tx_hash) = registry_clone
+                                        .xplode_moves
+                                        .commit_game(&game_id_clone)
+                                        .await
+                                    {
+                                        let update = GameMessage::BlockchainUpdate {
+                                            game_id: game_id_clone.clone(),
+                                            update_type: BlockchainUpdateType::GameCommitted,
+                                            transaction_hash: tx_hash,
+                                        };
+                                        let wrapper = GameMessageWrapper {
+                                            server_id: registry_clone.server_id.clone(),
+                                            game_message: update,
+                                        };
+                                        let _ = registry_clone
+                                            .publish_message(game_id_clone, wrapper, false)
+                                            .await;
+                                    }
+                                });
+
                                 // remove players from active state
                                 let mut active_players_write =
                                     registry.active_players.write().await;
@@ -927,8 +1036,6 @@ impl GameServer {
                                 registry
                                     .publish_message(game_id.clone(), wrapper, false)
                                     .await?;
-
-                                // dont clean up broadcast channel since game might be rematched
                             }
                         }
                     } else {
@@ -1009,6 +1116,65 @@ impl GameServer {
                                     };
                                     *game_state = new_game_state.clone();
 
+                                    // Record move and commit game on blockchain
+                                    let registry_clone = registry.clone();
+                                    let game_id_clone = game_id.clone();
+                                    let player_name = players_clone[turn_idx_clone].name.clone();
+                                    let x_clone = x;
+                                    let y_clone = y;
+                                    tokio::spawn(async move {
+                                        // First record the move
+                                        if let Ok(tx_hash) = registry_clone
+                                            .xplode_moves
+                                            .record_move(
+                                                &game_id_clone,
+                                                &player_name,
+                                                x_clone,
+                                                y_clone,
+                                            )
+                                            .await
+                                        {
+                                            let update = GameMessage::BlockchainUpdate {
+                                                game_id: game_id_clone.clone(),
+                                                update_type: BlockchainUpdateType::MoveRecorded,
+                                                transaction_hash: tx_hash,
+                                            };
+                                            let wrapper = GameMessageWrapper {
+                                                server_id: registry_clone.server_id.clone(),
+                                                game_message: update,
+                                            };
+                                            let _ = registry_clone
+                                                .publish_message(
+                                                    game_id_clone.clone(),
+                                                    wrapper,
+                                                    false,
+                                                )
+                                                .await;
+                                        }
+
+                                        println!("Committing game on blockchain");
+
+                                        // Then commit the game
+                                        if let Ok(tx_hash) = registry_clone
+                                            .xplode_moves
+                                            .commit_game(&game_id_clone)
+                                            .await
+                                        {
+                                            let update = GameMessage::BlockchainUpdate {
+                                                game_id: game_id_clone.clone(),
+                                                update_type: BlockchainUpdateType::GameCommitted,
+                                                transaction_hash: tx_hash,
+                                            };
+                                            let wrapper = GameMessageWrapper {
+                                                server_id: registry_clone.server_id.clone(),
+                                                game_message: update,
+                                            };
+                                            let _ = registry_clone
+                                                .publish_message(game_id_clone, wrapper, false)
+                                                .await;
+                                        }
+                                    });
+
                                     // Async DB operations
                                     let winning_amount =
                                         single_bet_size_clone / ((players_clone.len() - 1) as f64);
@@ -1050,6 +1216,38 @@ impl GameServer {
                                     // *turn_idx = (*turn_idx + 1) % players.len();
                                     info!("Setting locks to None, befor locks value: {:?}", *locks);
                                     *locks = None;
+
+                                    // Record move on blockchain
+                                    let registry_clone = registry.clone();
+                                    let game_id_clone = game_id.clone();
+                                    let player_name = players[turn_idx_clone].name.clone();
+                                    let x_clone = x;
+                                    let y_clone = y;
+                                    tokio::spawn(async move {
+                                        if let Ok(tx_hash) = registry_clone
+                                            .xplode_moves
+                                            .record_move(
+                                                &game_id_clone,
+                                                &player_name,
+                                                x_clone,
+                                                y_clone,
+                                            )
+                                            .await
+                                        {
+                                            let update = GameMessage::BlockchainUpdate {
+                                                game_id: game_id_clone.clone(),
+                                                update_type: BlockchainUpdateType::MoveRecorded,
+                                                transaction_hash: tx_hash,
+                                            };
+                                            let wrapper = GameMessageWrapper {
+                                                server_id: registry_clone.server_id.clone(),
+                                                game_message: update,
+                                            };
+                                            let _ = registry_clone
+                                                .publish_message(game_id_clone, wrapper, false)
+                                                .await;
+                                        }
+                                    });
                                 }
 
                                 // Broadcast the update for both cases
@@ -1333,6 +1531,29 @@ impl GameServer {
                     // {
                     //     eprintln!("Error sending redirect message: {}", e);
                     // }
+                }
+                GameMessage::BlockchainUpdate {
+                    game_id,
+                    update_type,
+                    transaction_hash,
+                } => {
+                    // Implementation for handling blockchain update
+                    info!("Handling blockchain update");
+                    info!("Game ID: {}", game_id);
+                    info!("Update Type: {:?}", update_type);
+                    info!("Transaction Hash: {}", transaction_hash);
+
+                    // Placeholder for actual blockchain update logic
+                    // This is a placeholder and should be replaced with actual implementation
+                    let response = "Blockchain update received";
+                    let game_message = GameMessage::Error(response.to_string());
+                    let wrapper = GameMessageWrapper {
+                        server_id: server_id.clone(),
+                        game_message,
+                    };
+                    registry
+                        .publish_message(game_id.clone(), wrapper, false)
+                        .await?;
                 }
                 _ => {}
             }
