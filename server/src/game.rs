@@ -143,6 +143,11 @@ pub enum GameMessage {
         update_type: BlockchainUpdateType,
         transaction_hash: String,
     },
+    Gif {
+        game_id: String,
+        player_id: String,
+        gif_id: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1022,7 +1027,7 @@ impl GameServer {
                                     *loser,
                                     *single_bet_size,
                                     winning_amount,
-                                    Currency::MON,
+                                    Currency::SOL,
                                 )
                                 .await?;
                                 *game_state = new_game_state;
@@ -1207,7 +1212,7 @@ impl GameServer {
                                             turn_idx_clone,
                                             single_bet_size_clone,
                                             winning_amount,
-                                            Currency::MON,
+                                            Currency::SOL,
                                         )
                                         .await;
                                     });
@@ -1454,6 +1459,27 @@ impl GameServer {
                     }
                 }
 
+                GameMessage::Gif {
+                    game_id,
+                    player_id,
+                    gif_id,
+                } => {
+                    let game_message = GameMessage::Gif {
+                        game_id: game_id.clone(),
+                        player_id: player_id.clone(),
+                        gif_id: gif_id.clone(),
+                    };
+
+                    let wrapper = GameMessageWrapper {
+                        server_id: server_id.clone(),
+                        game_message,
+                    };
+
+                    registry
+                        .publish_message(game_id.clone(), wrapper.clone(), false)
+                        .await?;
+                }
+
                 GameMessage::GameUpdate(msg) => {
                     // unreachable!("Should fail if execution enters here");
                     let game_message = GameMessage::GameUpdate(msg.clone());
@@ -1499,7 +1525,7 @@ impl GameServer {
                                 loser_idx,
                                 single_bet_size,
                                 winning_amount,
-                                Currency::MON,
+                                Currency::SOL,
                             )
                             .await?;
                         }

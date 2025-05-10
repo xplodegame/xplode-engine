@@ -1,5 +1,3 @@
-use std::env;
-
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
@@ -45,7 +43,7 @@ async fn fetch_or_create_user(
             let wallet: Wallet =
                 sqlx::query_as("SELECT * FROM wallet WHERE user_id = $1 AND currency = $2")
                     .bind(user.id)
-                    .bind(Currency::MON.to_string())
+                    .bind(req.currency.unwrap_or(Currency::MON).to_string())
                     .fetch_one(&mut *tx)
                     .await
                     .expect("Error fetching wallet");
@@ -54,7 +52,7 @@ async fn fetch_or_create_user(
 
             HttpResponse::Ok().json(json!({
                 "id": user.id,
-                "currency": Currency::MON.to_string(),
+                "currency": req.currency.unwrap_or(Currency::MON).to_string(),
                 "name": user.name,
                 "balance": wallet.balance,
                 "wallet_type": wallet.wallet_type,
@@ -78,7 +76,7 @@ async fn fetch_or_create_user(
                 "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address) VALUES ($1, $2, $3, $4, $5) RETURNING *",
             )
             .bind(created_user.id)
-            .bind(Currency::MON.to_string())
+            .bind(req.currency.unwrap_or(Currency::MON).to_string())
             .bind(0.0)
             .bind(WalletType::DIRECT.to_string())
             .bind(req.wallet_address.clone().unwrap_or_else(|| "".to_string()))
@@ -90,7 +88,7 @@ async fn fetch_or_create_user(
 
             HttpResponse::Created().json(json!({
                 "user_id": created_user.id,
-                "currency": Currency::MON.to_string() ,
+                "currency": req.currency.unwrap_or(Currency::MON).to_string(),
                 "balance": 0.0,
                 "wallet_type": WalletType::DIRECT.to_string(),
                 "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())

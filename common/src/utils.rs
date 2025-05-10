@@ -14,6 +14,7 @@ pub enum Currency {
 pub enum TxType {
     DEPOSIT,
     WITHDRAWAL,
+    PURCHASE,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -34,6 +35,7 @@ pub struct UserDetailsRequest {
     pub email: String,
     pub privy_id: String,
     pub wallet_address: Option<String>,
+    pub currency: Option<Currency>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -61,8 +63,8 @@ pub struct WithdrawRequest {
 
 impl_from_str_for_enum!(Currency, INR, SOL, USDC, MON);
 impl_to_string_for_enum!(Currency, INR, SOL, USDC, MON);
-impl_from_str_for_enum!(TxType, DEPOSIT, WITHDRAWAL);
-impl_to_string_for_enum!(TxType, DEPOSIT, WITHDRAWAL);
+impl_from_str_for_enum!(TxType, DEPOSIT, WITHDRAWAL, PURCHASE);
+impl_to_string_for_enum!(TxType, DEPOSIT, WITHDRAWAL, PURCHASE);
 impl_from_str_for_enum!(Network, SOLANA, MONAD);
 impl_to_string_for_enum!(Network, SOLANA, MONAD);
 impl_from_str_for_enum!(WalletType, PDA, DIRECT);
