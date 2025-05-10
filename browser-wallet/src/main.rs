@@ -228,19 +228,17 @@ async fn deposit(
 
     tx.commit().await.expect("Failed to commit transaction");
 
-    if env::var("PROFILE").unwrap_or_else(|_| "prod".to_string()) == "prod" {
-        // Send Telegram notification about the deposit
-        let message = format!(
-            "💰 New Deposit!\nUser ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
-            deposit_request.user_id,
-            deposit_request.amount,
-            deposit_request.currency,
-            deposit_request.tx_hash
-        );
+    // Send Telegram notification about the deposit
+    let message = format!(
+        "💰 New Deposit!\nUser ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
+        deposit_request.user_id,
+        deposit_request.amount,
+        deposit_request.currency,
+        deposit_request.tx_hash
+    );
 
-        if let Err(e) = telegram::send_telegram_message(&message).await {
-            error!("Failed to send Telegram notification: {}", e);
-        }
+    if let Err(e) = telegram::send_telegram_message(&message).await {
+        error!("Failed to send Telegram notification: {}", e);
     }
 
     HttpResponse::Ok().json(json!({
