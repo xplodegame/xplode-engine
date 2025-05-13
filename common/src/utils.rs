@@ -43,6 +43,7 @@ pub struct UserDetailsResponse {
     pub id: i32,
     pub name: String,
     pub email: String,
+    pub balance: f64,
     pub privy_id: String,
     pub wallet_address: Option<String>,
     pub currency: Option<Currency>,
