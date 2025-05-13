@@ -5,8 +5,8 @@ use common::{
     models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
     telegram,
     utils::{
-        self, Currency, DepositRequest, UpdateUserDetailsRequest, UserDetailsRequest, WalletType,
-        WithdrawRequest,
+        self, Currency, DepositRequest, MintNftRequest, UpdateUserDetailsRequest,
+        UserDetailsRequest, WalletType, WithdrawRequest,
     },
 };
 use db::establish_connection;
@@ -315,6 +315,79 @@ async fn withdraw(
     }))
 }
 
+#[actix_web::post("/mint-nft")]
+async fn mint_nft(
+    req: web::Json<MintNftRequest>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    let AppState { pool } = &**app_state;
+    let req = req.into_inner();
+    info!("Mint NFT request arrived");
+    info!("Mint NFT request: {:?}", req);
+
+    let mut tx = pool.begin().await.expect("Failed to start transaction");
+
+    // Validate gif_id is between 0-15
+    if req.gif_id < 0 || req.gif_id > 15 {
+        return HttpResponse::BadRequest().body("Invalid gif_id. Must be between 0 and 15");
+    }
+
+    // Check if user exists
+    let user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE id = $1")
+        .bind(req.user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("Error fetching user");
+
+    let user = match user {
+        Some(user) => user,
+        None => return HttpResponse::NotFound().body("User not found"),
+    };
+
+    // Add gif_id to user's gif_ids array if not already present
+    sqlx::query(
+        "UPDATE users SET gif_ids = array_append(gif_ids, $1) WHERE id = $2 AND NOT ($1 = ANY(gif_ids))",
+    )
+    .bind(req.gif_id)
+    .bind(req.user_id)
+    .execute(&mut *tx)
+    .await
+    .expect("Error updating user gif_ids");
+
+    // Record the transaction
+    sqlx::query(
+        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) 
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(req.user_id)
+    .bind(req.gif_id)
+    .bind(req.currency.to_string())
+    .bind(TxType::MINT.to_string())
+    .bind(&req.tx_hash)
+    .execute(&mut *tx)
+    .await
+    .expect("Error recording transaction");
+
+    tx.commit().await.expect("Failed to commit transaction");
+
+    // Send Telegram notification about the NFT mint
+    let message = format!(
+        "🎨 New NFT Mint!\nUser ID: {}\nGIF ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
+        req.user_id, req.gif_id, req.mint_amount, req.currency, req.tx_hash
+    );
+
+    if let Err(e) = telegram::send_telegram_message(&message).await {
+        error!("Failed to send Telegram notification: {}", e);
+    }
+
+    HttpResponse::Ok().json(json!({
+        "user_id": req.user_id,
+        "gif_id": req.gif_id,
+        "currency": req.currency,
+        "tx_hash": req.tx_hash
+    }))
+}
+
 struct AppState {
     pool: Pool<Postgres>,
 }
@@ -345,6 +418,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
             .service(update_user_details)
+            .service(mint_nft)
     })
     .bind("0.0.0.0:8080")?
     .run()
