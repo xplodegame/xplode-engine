@@ -14,7 +14,7 @@ pub enum Currency {
 pub enum TxType {
     DEPOSIT,
     WITHDRAWAL,
-    PURCHASE,
+    MINT,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -61,10 +61,19 @@ pub struct WithdrawRequest {
     pub withdraw_address: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct MintNftRequest {
+    pub user_id: i32,
+    pub gif_id: i32,
+    pub mint_amount: f64,
+    pub currency: Currency,
+    pub tx_hash: String,
+}
+
 impl_from_str_for_enum!(Currency, INR, SOL, USDC, MON);
 impl_to_string_for_enum!(Currency, INR, SOL, USDC, MON);
-impl_from_str_for_enum!(TxType, DEPOSIT, WITHDRAWAL, PURCHASE);
-impl_to_string_for_enum!(TxType, DEPOSIT, WITHDRAWAL, PURCHASE);
+impl_from_str_for_enum!(TxType, DEPOSIT, WITHDRAWAL, MINT);
+impl_to_string_for_enum!(TxType, DEPOSIT, WITHDRAWAL, MINT);
 impl_from_str_for_enum!(Network, SOLANA, MONAD);
 impl_to_string_for_enum!(Network, SOLANA, MONAD);
 impl_from_str_for_enum!(WalletType, PDA, DIRECT);
