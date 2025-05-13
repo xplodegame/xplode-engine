@@ -6,7 +6,7 @@ use common::{
     telegram,
     utils::{
         self, Currency, DepositRequest, MintNftRequest, UpdateUserDetailsRequest,
-        UserDetailsRequest, WalletType, WithdrawRequest,
+        UserDetailsRequest, UserDetailsResponse, WalletType, WithdrawRequest,
     },
 };
 use db::establish_connection;
@@ -50,14 +50,17 @@ async fn fetch_or_create_user(
 
             tx.commit().await.expect("Failed to commit transaction");
 
-            HttpResponse::Ok().json(json!({
-                "id": user.id,
-                "currency": req.currency.unwrap_or(Currency::MON).to_string(),
-                "name": user.name,
-                "balance": wallet.balance,
-                "wallet_type": wallet.wallet_type,
-                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
-            }))
+            let user_details_response = UserDetailsResponse {
+                id: user.id,
+                currency: Some(req.currency.unwrap_or(Currency::MON)),
+                name: user.name,
+                email: user.email,
+                privy_id: user.privy_id,
+                wallet_address: wallet.wallet_address,
+                gif_ids: user.gif_ids,
+            };
+
+            HttpResponse::Ok().json(user_details_response)
         }
         None => {
             // Create new user
@@ -86,13 +89,17 @@ async fn fetch_or_create_user(
 
             tx.commit().await.expect("Failed to commit transaction");
 
-            HttpResponse::Created().json(json!({
-                "user_id": created_user.id,
-                "currency": req.currency.unwrap_or(Currency::MON).to_string(),
-                "balance": 0.0,
-                "wallet_type": WalletType::DIRECT.to_string(),
-                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
-            }))
+            let user_details_response = UserDetailsResponse {
+                id: created_user.id,
+                name: created_user.name,
+                email: created_user.email,
+                privy_id: created_user.privy_id,
+                wallet_address: wallet.wallet_address,
+                currency: Some(req.currency.unwrap_or(Currency::MON)),
+                gif_ids: vec![],
+            };
+
+            HttpResponse::Created().json(user_details_response)
         }
     }
 }
