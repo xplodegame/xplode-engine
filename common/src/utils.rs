@@ -38,6 +38,17 @@ pub struct UserDetailsRequest {
     pub currency: Option<Currency>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UserDetailsResponse {
+    pub id: i32,
+    pub name: String,
+    pub email: String,
+    pub privy_id: String,
+    pub wallet_address: Option<String>,
+    pub currency: Option<Currency>,
+    pub gif_ids: Vec<i32>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct UpdateUserDetailsRequest {
     pub name: Option<String>,
