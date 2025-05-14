@@ -364,41 +364,6 @@ impl GameRegistry {
                         // Game is transitioning to RUNNING state
                         // Remove from discovery since it's no longer accepting players
                         self.discovery.remove_game_session(&game_id).await?;
-
-                        // // Initialize game on blockchain
-                        // let registry_clone = self.clone();
-                        // let game_id_clone = game_id.clone();
-                        // let grid_size = board.n as u32;
-                        // let bomb_positions: Vec<(usize, usize)> = board
-                        //     .bomb_coordinates
-                        //     .iter()
-                        //     .map(|&pos| {
-                        //         let x = (pos / board.n as u64) as usize;
-                        //         let y = (pos % board.n as u64) as usize;
-                        //         (x, y)
-                        //     })
-                        //     .collect();
-                        // tokio::spawn(async move {
-                        //     if let Ok(tx_hash) = registry_clone
-                        //         .xplode_moves
-                        //         .initialize_game(&game_id_clone, grid_size, bomb_positions)
-                        //         .await
-                        //     {
-                        //         let update = GameMessage::BlockchainUpdate {
-                        //             game_id: game_id_clone.clone(),
-                        //             update_type: BlockchainUpdateType::GameInitialized,
-                        //             transaction_hash: tx_hash,
-                        //         };
-                        //         let wrapper = GameMessageWrapper {
-                        //             server_id: registry_clone.server_id.clone(),
-                        //             game_message: update,
-                        //         };
-                        //         let _ = registry_clone
-                        //             .publish_message(game_id_clone.clone(), wrapper, false)
-                        //             .await;
-                        //     }
-                        // });
-
                         GameState::RUNNING {
                             game_id: game_id.clone(),
                             players,
@@ -470,17 +435,19 @@ impl GameRegistry {
         info!("Ahoy");
         info!("--------------------------------");
 
-        // if env::var("PROFILE").unwrap_or_else(|_| "prod".to_string()) == "prod" {
-        info!("Sending Telegram notification");
-        // Send Telegram notification.
-        let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
-        let notification_message = format!(
+        let testing = env::var("TESTING").unwrap_or_else(|_| "false".to_string());
+
+        if testing == "false" {
+            info!("Sending Telegram notification");
+            // Send Telegram notification.
+            let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
+            let notification_message = format!(
             "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}\nIs Creating Room: {}",
             game_url, name, single_bet_size, min_players, grid, grid, bombs, is_creating_room);
-        if let Err(e) = send_telegram_message(&notification_message).await {
-            error!("Failed to send Telegram notification: {}", e);
+            if let Err(e) = send_telegram_message(&notification_message).await {
+                error!("Failed to send Telegram notification: {}", e);
+            }
         }
-        // }
 
         // Register the new game session
         let session = GameSession {
@@ -559,7 +526,7 @@ impl GameServer {
         let data = &buf[..n];
 
         // Extract machine ID and handle redirection
-        if let Some(target_machine_id) = extract_machine_id(&data, &server_id) {
+        if let Some(target_machine_id) = extract_machine_id(data, &server_id) {
             info!(
                 "Redirecting WebSocket connection to machine: {}",
                 target_machine_id
@@ -604,7 +571,7 @@ impl GameServer {
         let current_player_id = Arc::new(RwLock::new(String::new()));
 
         // Spawn a task to handle incoming WebSocket messages
-        let _ = tokio::spawn({
+        let _: tokio::task::JoinHandle<()> = tokio::spawn({
             let server_tx = server_tx.clone();
             let current_player_id = current_player_id.clone();
             let registry_clone = registry.clone();
@@ -871,8 +838,8 @@ impl GameServer {
                                 game_id: game_id.clone(),
                                 creator: creator.clone(),
                                 board: board.clone(),
-                                single_bet_size: single_bet_size,
-                                min_players: min_players,
+                                single_bet_size,
+                                min_players,
                                 players,
                             }
                         } else {
@@ -953,10 +920,7 @@ impl GameServer {
                         info!("Player added to active players");
                     } else {
                         let game_session =
-                            match registry.discovery.find_game_session_by_id(&game_id).await {
-                                Ok(session) => session,
-                                Err(_) => None,
-                            };
+                            registry.discovery.find_game_session_by_id(&game_id).await?;
                         if let Some(game_session) = game_session {
                             let redirect = GameMessage::RedirectToServer {
                                 game_id: game_session.game_id,
