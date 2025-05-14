@@ -1,8 +1,14 @@
+use std::env;
+
 use actix_cors::Cors;
-use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    middleware::Logger,
+    web::{self, Path},
+    App, HttpResponse, HttpServer, Responder,
+};
 use common::{
     db,
-    models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{GamePnl, LeaderboardEntry, User, UserNetworkPnl, Wallet},
     telegram,
     utils::{
         self, Currency, DepositRequest, MintNftRequest, UpdateUserDetailsRequest,
@@ -28,6 +34,7 @@ async fn fetch_or_create_user(
         "Fetching or creating user with privy_id: {:?}",
         req.privy_id
     );
+    info!("Fetching or creating user details request: {:?}", req);
     let AppState { pool } = &**app_state;
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -160,6 +167,19 @@ async fn get_user_stats(
     HttpResponse::Ok().json(stats)
 }
 
+#[actix_web::get("/game_pnl/{user_id}")]
+async fn get_game_pnl(path: Path<i32>, app_state: web::Data<AppState>) -> impl Responder {
+    let user_id = path.into_inner();
+    let AppState { pool } = &**app_state;
+
+    let game_pnls: Vec<GamePnl> = sqlx::query_as("SELECT * FROM game_pnl where user_id = $1")
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .expect("Failed to fetch game pnl of user");
+    HttpResponse::Ok().json(game_pnls)
+}
+
 #[actix_web::get("/leaderboard/{currency}/{timeframe}")]
 async fn get_leaderboard(
     path: web::Path<(String, String)>,
@@ -235,17 +255,19 @@ async fn deposit(
 
     tx.commit().await.expect("Failed to commit transaction");
 
-    // Send Telegram notification about the deposit
-    let message = format!(
-        "💰 New Deposit!\nUser ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
-        deposit_request.user_id,
-        deposit_request.amount,
-        deposit_request.currency,
-        deposit_request.tx_hash
-    );
+    if env::var("TESTING").unwrap_or_else(|_| "false".to_string()) == "false" {
+        // Send Telegram notification about the deposit
+        let message = format!(
+            "💰 New Deposit!\nUser ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
+            deposit_request.user_id,
+            deposit_request.amount,
+            deposit_request.currency,
+            deposit_request.tx_hash
+        );
 
-    if let Err(e) = telegram::send_telegram_message(&message).await {
-        error!("Failed to send Telegram notification: {}", e);
+        if let Err(e) = telegram::send_telegram_message(&message).await {
+            error!("Failed to send Telegram notification: {}", e);
+        }
     }
 
     HttpResponse::Ok().json(json!({
@@ -348,10 +370,9 @@ async fn mint_nft(
         .await
         .expect("Error fetching user");
 
-    let user = match user {
-        Some(user) => user,
-        None => return HttpResponse::NotFound().body("User not found"),
-    };
+    if user.is_none() {
+        return HttpResponse::NotFound().body("User not found");
+    }
 
     // Add gif_id to user's gif_ids array if not already present
     sqlx::query(
@@ -427,6 +448,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
             .service(update_user_details)
+            .service(get_game_pnl)
             .service(mint_nft)
     })
     .bind("0.0.0.0:8080")?
