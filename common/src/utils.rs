@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{impl_from_str_for_enum, impl_to_string_for_enum};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum Currency {
     INR,
     SOL,
