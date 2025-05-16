@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, str::FromStr};
 
 use actix_cors::Cors;
 use actix_web::{
@@ -18,12 +18,18 @@ use common::{
 use db::establish_connection;
 use dotenv::dotenv;
 
+mod solana;
+
 use evm_deposits::transfer_funds;
 use serde_json::json;
+use solana::withdraw_funds_to_user;
+use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
+
+const USD_TO_LAMPORTS: u64 = 1_000_000_000;
 
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
@@ -301,10 +307,30 @@ async fn withdraw(
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
-    let tx_hash = match transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount).await {
-        Ok(hash) => hash,
-        Err(e) => {
-            return HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
+    let tx_hash = match withdraw_req.currency {
+        Currency::MON => transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount)
+            .await
+            .map_err(|e| {
+                HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
+            })
+            .unwrap(),
+        Currency::SOL => {
+            let withdraw_address_pubkey = Pubkey::from_str(&withdraw_req.withdraw_address)
+                .map_err(|_| HttpResponse::BadRequest().body("Invalid Solana address"))
+                .unwrap();
+
+            withdraw_funds_to_user(
+                withdraw_address_pubkey,
+                (withdraw_req.amount * USD_TO_LAMPORTS as f64) as u64,
+            )
+            .await
+            .map_err(|e| {
+                HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
+            })
+            .unwrap()
+        }
+        _ => {
+            return HttpResponse::BadRequest().body("Invalid currency");
         }
     };
 
