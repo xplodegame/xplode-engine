@@ -416,7 +416,7 @@ async fn mint_nft(
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(req.user_id)
-    .bind(req.gif_id)
+    .bind(req.mint_amount)
     .bind(req.currency.to_string())
     .bind(TxType::MINT.to_string())
     .bind(&req.tx_hash)
