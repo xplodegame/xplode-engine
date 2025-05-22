@@ -1,35 +1,25 @@
-use std::{env, str::FromStr};
+use std::env;
 
 use actix_cors::Cors;
-use actix_web::{
-    middleware::Logger,
-    web::{self, Path},
-    App, HttpResponse, HttpServer, Responder,
-};
+use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use common::{
     db,
-    models::{GamePnl, LeaderboardEntry, User, UserNetworkPnl, Wallet},
+    models::{LeaderboardEntry, User, UserNetworkPnl, Wallet},
     telegram,
     utils::{
-        self, Currency, DepositRequest, MintNftRequest, UpdateUserDetailsRequest,
-        UserDetailsRequest, UserDetailsResponse, WalletType, WithdrawRequest,
+        self, Currency, DepositRequest, UpdateUserDetailsRequest, UserDetailsRequest, WalletType,
+        WithdrawRequest,
     },
 };
 use db::establish_connection;
 use dotenv::dotenv;
 
-mod solana;
-
 use evm_deposits::transfer_funds;
 use serde_json::json;
-use solana::withdraw_funds_to_user;
-use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use utils::TxType;
-
-const USD_TO_LAMPORTS: u64 = 1_000_000_000;
 
 #[actix_web::post("/user-details")]
 async fn fetch_or_create_user(
@@ -40,7 +30,6 @@ async fn fetch_or_create_user(
         "Fetching or creating user with privy_id: {:?}",
         req.privy_id
     );
-    info!("Fetching or creating user details request: {:?}", req);
     let AppState { pool } = &**app_state;
     let mut tx = pool.begin().await.expect("Failed to start transaction");
 
@@ -56,25 +45,21 @@ async fn fetch_or_create_user(
             let wallet: Wallet =
                 sqlx::query_as("SELECT * FROM wallet WHERE user_id = $1 AND currency = $2")
                     .bind(user.id)
-                    .bind(req.currency.unwrap_or(Currency::MON).to_string())
+                    .bind(Currency::MON.to_string())
                     .fetch_one(&mut *tx)
                     .await
                     .expect("Error fetching wallet");
 
             tx.commit().await.expect("Failed to commit transaction");
 
-            let user_details_response = UserDetailsResponse {
-                id: user.id,
-                currency: Some(req.currency.unwrap_or(Currency::MON)),
-                name: user.name,
-                email: user.email,
-                balance: wallet.balance,
-                privy_id: user.privy_id,
-                wallet_address: wallet.wallet_address,
-                gif_ids: user.gif_ids,
-            };
-
-            HttpResponse::Ok().json(user_details_response)
+            HttpResponse::Ok().json(json!({
+                "id": user.id,
+                "currency": Currency::MON.to_string(),
+                "name": user.name,
+                "balance": wallet.balance,
+                "wallet_type": wallet.wallet_type,
+                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
+            }))
         }
         None => {
             // Create new user
@@ -93,7 +78,7 @@ async fn fetch_or_create_user(
                 "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address) VALUES ($1, $2, $3, $4, $5) RETURNING *",
             )
             .bind(created_user.id)
-            .bind(req.currency.unwrap_or(Currency::MON).to_string())
+            .bind(Currency::MON.to_string())
             .bind(0.0)
             .bind(WalletType::DIRECT.to_string())
             .bind(req.wallet_address.clone().unwrap_or_else(|| "".to_string()))
@@ -103,18 +88,13 @@ async fn fetch_or_create_user(
 
             tx.commit().await.expect("Failed to commit transaction");
 
-            let user_details_response = UserDetailsResponse {
-                id: created_user.id,
-                name: created_user.name,
-                email: created_user.email,
-                balance: wallet.balance,
-                privy_id: created_user.privy_id,
-                wallet_address: wallet.wallet_address,
-                currency: Some(req.currency.unwrap_or(Currency::MON)),
-                gif_ids: vec![],
-            };
-
-            HttpResponse::Created().json(user_details_response)
+            HttpResponse::Created().json(json!({
+                "user_id": created_user.id,
+                "currency": Currency::MON.to_string() ,
+                "balance": 0.0,
+                "wallet_type": WalletType::DIRECT.to_string(),
+                "wallet_address": wallet.wallet_address.unwrap_or_else(|| "".to_string())
+            }))
         }
     }
 }
@@ -171,19 +151,6 @@ async fn get_user_stats(
             .expect("Error fetching user stats");
 
     HttpResponse::Ok().json(stats)
-}
-
-#[actix_web::get("/game_pnl/{user_id}")]
-async fn get_game_pnl(path: Path<i32>, app_state: web::Data<AppState>) -> impl Responder {
-    let user_id = path.into_inner();
-    let AppState { pool } = &**app_state;
-
-    let game_pnls: Vec<GamePnl> = sqlx::query_as("SELECT * FROM game_pnl where user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await
-        .expect("Failed to fetch game pnl of user");
-    HttpResponse::Ok().json(game_pnls)
 }
 
 #[actix_web::get("/leaderboard/{currency}/{timeframe}")]
@@ -305,30 +272,10 @@ async fn withdraw(
         return HttpResponse::BadRequest().body("Insufficient balance");
     }
 
-    let tx_hash = match withdraw_req.currency {
-        Currency::MON => transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount)
-            .await
-            .map_err(|e| {
-                HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
-            })
-            .unwrap(),
-        Currency::SOL => {
-            let withdraw_address_pubkey = Pubkey::from_str(&withdraw_req.withdraw_address)
-                .map_err(|_| HttpResponse::BadRequest().body("Invalid Solana address"))
-                .unwrap();
-
-            withdraw_funds_to_user(
-                withdraw_address_pubkey,
-                (withdraw_req.amount * USD_TO_LAMPORTS as f64) as u64,
-            )
-            .await
-            .map_err(|e| {
-                HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
-            })
-            .unwrap()
-        }
-        _ => {
-            return HttpResponse::BadRequest().body("Invalid currency");
+    let tx_hash = match transfer_funds(&withdraw_req.withdraw_address, withdraw_req.amount).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            return HttpResponse::InternalServerError().body(format!("Transfer failed: {}", e))
         }
     };
 
@@ -370,78 +317,6 @@ async fn withdraw(
     }))
 }
 
-#[actix_web::post("/mint-nft")]
-async fn mint_nft(
-    req: web::Json<MintNftRequest>,
-    app_state: web::Data<AppState>,
-) -> impl Responder {
-    let AppState { pool } = &**app_state;
-    let req = req.into_inner();
-    info!("Mint NFT request arrived");
-    info!("Mint NFT request: {:?}", req);
-
-    let mut tx = pool.begin().await.expect("Failed to start transaction");
-
-    // Validate gif_id is between 0-15
-    if req.gif_id < 0 || req.gif_id > 15 {
-        return HttpResponse::BadRequest().body("Invalid gif_id. Must be between 0 and 15");
-    }
-
-    // Check if user exists
-    let user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE id = $1")
-        .bind(req.user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .expect("Error fetching user");
-
-    if user.is_none() {
-        return HttpResponse::NotFound().body("User not found");
-    }
-
-    // Add gif_id to user's gif_ids array if not already present
-    sqlx::query(
-        "UPDATE users SET gif_ids = array_append(gif_ids, $1) WHERE id = $2 AND NOT ($1 = ANY(gif_ids))",
-    )
-    .bind(req.gif_id)
-    .bind(req.user_id)
-    .execute(&mut *tx)
-    .await
-    .expect("Error updating user gif_ids");
-
-    // Record the transaction
-    sqlx::query(
-        "INSERT INTO transactions (user_id, amount, currency, tx_type, tx_hash) 
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(req.user_id)
-    .bind(req.mint_amount)
-    .bind(req.currency.to_string())
-    .bind(TxType::MINT.to_string())
-    .bind(&req.tx_hash)
-    .execute(&mut *tx)
-    .await
-    .expect("Error recording transaction");
-
-    tx.commit().await.expect("Failed to commit transaction");
-
-    // Send Telegram notification about the NFT mint
-    let message = format!(
-        "🎨 New NFT Mint!\nUser ID: {}\nGIF ID: {}\nAmount: {} {:?}\nTransaction Hash: {}",
-        req.user_id, req.gif_id, req.mint_amount, req.currency, req.tx_hash
-    );
-
-    if let Err(e) = telegram::send_telegram_message(&message).await {
-        error!("Failed to send Telegram notification: {}", e);
-    }
-
-    HttpResponse::Ok().json(json!({
-        "user_id": req.user_id,
-        "gif_id": req.gif_id,
-        "currency": req.currency,
-        "tx_hash": req.tx_hash
-    }))
-}
-
 struct AppState {
     pool: Pool<Postgres>,
 }
@@ -472,8 +347,6 @@ async fn main() -> std::io::Result<()> {
             .service(get_user_stats)
             .service(get_leaderboard)
             .service(update_user_details)
-            .service(get_game_pnl)
-            .service(mint_nft)
     })
     .bind("0.0.0.0:8080")?
     .run()

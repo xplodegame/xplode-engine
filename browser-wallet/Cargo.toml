@@ -20,5 +20,3 @@ common = {path = "../common"}
 tracing.workspace = true
 tracing-subscriber.workspace = true
 evm-deposits = {path = "../evm-deposits"}
-solana-client.workspace = true
-solana-sdk.workspace = true
