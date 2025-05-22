@@ -4,7 +4,7 @@ use std::env;
 use tracing::info;
 
 use crate::{
-    models::{LeaderboardEntry, User, Wallet},
+    models::{LeaderboardEntry, Wallet},
     utils::Currency,
 };
 
@@ -48,29 +48,29 @@ pub async fn update_user_wallet(
     Ok(())
 }
 
-pub async fn create_user_and_wallet(
-    pool: &Pool<Postgres>,
-    user: &User,
-    wallet_type: &str,
-    wallet_address: Option<String>,
-) -> Result<()> {
-    let mut tx = pool.begin().await?;
+// pub async fn create_user_and_wallet(
+//     pool: &Pool<Postgres>,
+//     user: &User,
+//     wallet_type: &str,
+//     wallet_address: Option<String>,
+// ) -> Result<()> {
+//     let mut tx = pool.begin().await?;
 
-    sqlx::query(
-        "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address) 
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(user.id)
-    .bind(Currency::MON.to_string())
-    .bind(0.0)
-    .bind(wallet_type)
-    .bind(wallet_address)
-    .execute(&mut *tx)
-    .await?;
+//     sqlx::query(
+//         "INSERT INTO wallet (user_id, currency, balance, wallet_type, wallet_address)
+//          VALUES ($1, $2, $3, $4, $5)",
+//     )
+//     .bind(user.id)
+//     .bind(Currency::MON.to_string())
+//     .bind(0.0)
+//     .bind(wallet_type)
+//     .bind(wallet_address)
+//     .execute(&mut *tx)
+//     .await?;
 
-    tx.commit().await?;
-    Ok(())
-}
+//     tx.commit().await?;
+//     Ok(())
+// }
 
 pub async fn update_player_balances(
     pool: &Pool<Postgres>,
