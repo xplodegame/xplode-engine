@@ -11,6 +11,7 @@ pub struct User {
     pub user_pda: Option<String>,                  // Changed to Option<String>
     pub created_at: chrono::DateTime<chrono::Utc>, // Use proper timestamp type
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub gif_ids: Vec<i32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
