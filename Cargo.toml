@@ -40,5 +40,3 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 warp = "0.3"
 deadpool-redis = "0.13.0"
-solana-client = "2.2.7"
-solana-sdk = "2.2.2"
