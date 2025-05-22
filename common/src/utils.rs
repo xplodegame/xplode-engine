@@ -61,7 +61,6 @@ pub struct DepositRequest {
     pub user_id: i32,
     pub amount: f64,
     pub currency: Currency,
-    pub tx_type: TxType,
     pub tx_hash: String,
 }
 
