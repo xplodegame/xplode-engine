@@ -437,16 +437,14 @@ impl GameRegistry {
 
         let testing = env::var("TESTING").unwrap_or_else(|_| "false".to_string());
 
-        if testing == "false" {
-            info!("Sending Telegram notification");
-            // Send Telegram notification.
-            let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
-            let notification_message = format!(
+        info!("Sending Telegram notification");
+        // Send Telegram notification.
+        let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
+        let notification_message = format!(
             "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}\nIs Creating Room: {}",
             game_url, name, single_bet_size, min_players, grid, grid, bombs, is_creating_room);
-            if let Err(e) = send_telegram_message(&notification_message).await {
-                error!("Failed to send Telegram notification: {}", e);
-            }
+        if let Err(e) = send_telegram_message(&notification_message).await {
+            error!("Failed to send Telegram notification: {}", e);
         }
 
         // Register the new game session
