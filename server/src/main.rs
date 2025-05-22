@@ -3,7 +3,7 @@ use dotenv::dotenv;
 use game::GameServer;
 use tracing::info;
 
-agg_mod!(board game player seed_gen discovery);
+agg_mod!(board game player seed_gen discovery xplode_moves);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
