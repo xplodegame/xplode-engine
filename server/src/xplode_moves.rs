@@ -29,7 +29,7 @@ impl XplodeMovesClient {
 
         let response = self
             .client
-            .post(&format!("{}/initialize", self.api_base))
+            .post(format!("{}/initialize", self.api_base))
             .json(&json!({
                 "gameId": game_id,
                 "gridSize": grid_size,
@@ -54,7 +54,7 @@ impl XplodeMovesClient {
     ) -> Result<String> {
         let response = self
             .client
-            .post(&format!("{}/move", self.api_base))
+            .post(format!("{}/move", self.api_base))
             .json(&json!({
                 "gameId": game_id,
                 "playerName": player_name,
@@ -74,7 +74,7 @@ impl XplodeMovesClient {
         println!("Committing game on blockchain");
         let response = self
             .client
-            .post(&format!("{}/commit", self.api_base))
+            .post(format!("{}/commit", self.api_base))
             .json(&json!({
                 "gameId": game_id
             }))
