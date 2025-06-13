@@ -150,6 +150,17 @@ pub enum GameMessage {
     },
 }
 
+#[derive(Debug, Clone)]
+struct PlayRequest {
+    player_id: String,
+    name: String,
+    single_bet_size: f64,
+    min_players: u32,
+    bombs: u32,
+    grid: u32,
+    is_creating_room: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameMessageWrapper {
     server_id: String,
@@ -298,17 +309,18 @@ impl GameRegistry {
     }
 
     // Modify the matchmaking logic in handle_play_message
-    async fn handle_play_message(
-        &self,
-        player_id: String,
-        name: String,
-        single_bet_size: f64,
-        min_players: u32,
-        bombs: u32,
-        grid: u32,
-        is_creating_room: bool,
-    ) -> Result<Option<GameState>> {
+    async fn handle_play_message(&self, play_request: PlayRequest) -> Result<Option<GameState>> {
         info!("Handling play message");
+
+        let PlayRequest {
+            player_id,
+            name,
+            single_bet_size,
+            grid,
+            bombs,
+            min_players,
+            is_creating_room,
+        } = play_request;
         // First check if player is already in a game
         let active_players_read = self.active_players.read().await;
         if active_players_read.contains_key(&player_id) {
@@ -325,14 +337,9 @@ impl GameRegistry {
         {
             // If the session is on this server, get it from local state
             if session.server_id == self.server_id {
-                let state = {
-                    let games_read = self.games.read().await;
-                    if let Some(state) = games_read.get(&session.game_id) {
-                        Some(state.clone())
-                    } else {
-                        None
-                    }
-                };
+                let games_read = self.games.read().await;
+
+                let state = games_read.get(&session.server_id).cloned();
 
                 if let Some(GameState::WAITING {
                     game_id,
@@ -431,21 +438,28 @@ impl GameRegistry {
             }
         });
 
-        info!("--------------------------------");
-        info!("Ahoy");
-        info!("--------------------------------");
-
-        let testing = env::var("TESTING").unwrap_or_else(|_| "false".to_string());
-
         info!("Sending Telegram notification");
         // Send Telegram notification.
         let game_url = format!("https://playxplode.xyz/multiplayer/{}", game_id);
         let notification_message = format!(
             "🎮 New game created!\n\nGame URL: {}\nCreator: {}\nBet Size: {}\nMin Players: {}\nGrid Size: {}x{}\nBombs: {}\nIs Creating Room: {}",
             game_url, name, single_bet_size, min_players, grid, grid, bombs, is_creating_room);
-        if let Err(e) = send_telegram_message(&notification_message).await {
-            error!("Failed to send Telegram notification: {}", e);
-        }
+
+        // Spawn a separate task for Telegram notification
+        tokio::spawn(async move {
+            if let Err(e) = send_telegram_message(&notification_message).await {
+                error!("Failed to send Telegram notification: {}", e);
+            }
+            let client = reqwest::Client::new();
+
+            if let Err(e) = client
+                .get("https://xplode-notify-service-production.up.railway.app/matchmaking")
+                .send()
+                .await
+            {
+                error!("Failed to send notification to notify service: {}", e);
+            }
+        });
 
         // Register the new game session
         let session = GameSession {
@@ -569,7 +583,7 @@ impl GameServer {
         let current_player_id = Arc::new(RwLock::new(String::new()));
 
         // Spawn a task to handle incoming WebSocket messages
-        let _: tokio::task::JoinHandle<()> = tokio::spawn({
+        tokio::spawn({
             let server_tx = server_tx.clone();
             let current_player_id = current_player_id.clone();
             let registry_clone = registry.clone();
@@ -617,8 +631,7 @@ impl GameServer {
                     let active_players_read = registry_clone.active_players.read().await;
                     let game_id = active_players_read.get(&player_id);
                     if let Some(game_id) = game_id {
-                        let game_id_clone = game_id.clone();
-                        let game_state = registry_clone.get_game_state(&game_id).await;
+                        let game_state = registry_clone.get_game_state(game_id).await;
                         if let Some(GameState::RUNNING {
                             game_id,
                             players,
@@ -629,11 +642,11 @@ impl GameServer {
                         {
                             let loser_idx = players.iter().position(|p| p.id == player_id).unwrap();
                             let new_game_state = GameState::FINISHED {
-                                game_id,
+                                game_id: game_id.clone(),
                                 loser_idx,
                                 board: board.clone(),
                                 players: players.clone(),
-                                single_bet_size: single_bet_size,
+                                single_bet_size,
                             };
 
                             let game_message = GameMessage::GameUpdate(new_game_state);
@@ -641,9 +654,7 @@ impl GameServer {
                             server_tx_inner.send(game_message).await.unwrap();
 
                             // Clean up broadcast channel since player has left
-                            registry_clone
-                                .cleanup_broadcast_channel(&game_id_clone)
-                                .await;
+                            registry_clone.cleanup_broadcast_channel(&game_id).await;
                         }
                     }
                     drop(active_players_read);
@@ -707,19 +718,17 @@ impl GameServer {
                     }
                     drop(active_players_read);
 
+                    let play_request = PlayRequest {
+                        player_id: player_id.clone(),
+                        name: name.clone(),
+                        single_bet_size,
+                        min_players,
+                        bombs,
+                        grid,
+                        is_creating_room,
+                    };
                     // Try to find or create a game using discovery service
-                    match registry
-                        .handle_play_message(
-                            player_id.clone(),
-                            name.clone(),
-                            single_bet_size,
-                            min_players,
-                            bombs,
-                            grid,
-                            is_creating_room,
-                        )
-                        .await
-                    {
+                    match registry.handle_play_message(play_request).await {
                         Ok(Some(game_state)) => {
                             info!("created or joined on this server");
                             // Game was created or joined on this server
@@ -746,7 +755,7 @@ impl GameServer {
                             info!("Game Message: {:?}", game_message);
                             let wrapper = GameMessageWrapper {
                                 server_id: server_id.clone(),
-                                game_message: game_message,
+                                game_message,
                             };
 
                             registry
@@ -845,46 +854,12 @@ impl GameServer {
                             // Remove from discovery since it's no longer accepting players
                             registry.discovery.remove_game_session(&game_id).await?;
 
-                            // Initialize game on blockchain
-                            let registry_clone = registry.clone();
-                            let game_id_clone = game_id.clone();
-                            let grid_size = board.n as u32;
-                            let bomb_positions: Vec<(usize, usize)> = board
-                                .bomb_coordinates
-                                .iter()
-                                .map(|&pos| {
-                                    let x = (pos / board.n as u64) as usize;
-                                    let y = (pos % board.n as u64) as usize;
-                                    (x, y)
-                                })
-                                .collect();
-                            tokio::spawn(async move {
-                                if let Ok(tx_hash) = registry_clone
-                                    .xplode_moves
-                                    .initialize_game(&game_id_clone, grid_size, bomb_positions)
-                                    .await
-                                {
-                                    let update = GameMessage::BlockchainUpdate {
-                                        game_id: game_id_clone.clone(),
-                                        update_type: BlockchainUpdateType::GameInitialized,
-                                        transaction_hash: tx_hash,
-                                    };
-                                    let wrapper = GameMessageWrapper {
-                                        server_id: registry_clone.server_id.clone(),
-                                        game_message: update,
-                                    };
-                                    let _ = registry_clone
-                                        .publish_message(game_id_clone.clone(), wrapper, false)
-                                        .await;
-                                }
-                            });
-
                             GameState::RUNNING {
                                 game_id: game_id.clone(),
                                 players,
                                 board: board.clone(),
                                 turn_idx: 0,
-                                single_bet_size: single_bet_size,
+                                single_bet_size,
                                 locks: None,
                             }
                         };
@@ -971,31 +946,6 @@ impl GameServer {
                                     players: players.clone(),
                                     single_bet_size: *single_bet_size,
                                 };
-
-                                // Commit game on blockchain
-                                let registry_clone = registry.clone();
-                                let game_id_clone = game_id.clone();
-                                tokio::spawn(async move {
-                                    if let Ok(tx_hash) = registry_clone
-                                        .xplode_moves
-                                        .commit_game(&game_id_clone)
-                                        .await
-                                    {
-                                        let update = GameMessage::BlockchainUpdate {
-                                            game_id: game_id_clone.clone(),
-                                            update_type: BlockchainUpdateType::GameCommitted,
-                                            transaction_hash: tx_hash,
-                                        };
-                                        let wrapper = GameMessageWrapper {
-                                            server_id: registry_clone.server_id.clone(),
-                                            game_message: update,
-                                        };
-                                        let _ = registry_clone
-                                            .publish_message(game_id_clone, wrapper, false)
-                                            .await;
-                                    }
-                                });
-
                                 // remove players from active state
                                 let mut active_players_write =
                                     registry.active_players.write().await;
@@ -1152,28 +1102,6 @@ impl GameServer {
                                                 )
                                                 .await;
                                         }
-
-                                        info!("no manual committing game on blockchain");
-
-                                        // // Then commit the game
-                                        // if let Ok(tx_hash) = registry_clone
-                                        //     .xplode_moves
-                                        //     .commit_game(&game_id_clone)
-                                        //     .await
-                                        // {
-                                        //     let update = GameMessage::BlockchainUpdate {
-                                        //         game_id: game_id_clone.clone(),
-                                        //         update_type: BlockchainUpdateType::GameCommitted,
-                                        //         transaction_hash: tx_hash,
-                                        //     };
-                                        //     let wrapper = GameMessageWrapper {
-                                        //         server_id: registry_clone.server_id.clone(),
-                                        //         game_message: update,
-                                        //     };
-                                        //     let _ = registry_clone
-                                        //         .publish_message(game_id_clone, wrapper, false)
-                                        //         .await;
-                                        // }
                                     });
 
                                     // Async DB operations
@@ -1341,7 +1269,7 @@ impl GameServer {
                         {
                             let grid = board.n;
                             let bombs = board.bomb_coordinates.len();
-                            let new_board = Board::new(grid as usize, bombs as usize);
+                            let new_board = Board::new(grid, bombs);
 
                             let (index, _) = players
                                 .iter()
@@ -1349,13 +1277,13 @@ impl GameServer {
                                 .find(|(_, p)| *p.id == requester_id)
                                 .expect("Failed to find player id in player array");
 
-                            let mut rematch_acceptants = vec![0 as usize; players.len()];
+                            let mut rematch_acceptants = vec![0; players.len()];
                             rematch_acceptants[index] = 1;
                             let new_game_state = GameState::REMATCH {
                                 game_id: game_id.clone(),
                                 players: players.clone(),
                                 board: new_board,
-                                single_bet_size: single_bet_size.clone(),
+                                single_bet_size: *single_bet_size,
                                 accepted: rematch_acceptants,
                             };
 
@@ -1415,7 +1343,7 @@ impl GameServer {
                                         players: players.clone(),
                                         board: board.clone(),
                                         turn_idx: 0,
-                                        single_bet_size: single_bet_size.clone(),
+                                        single_bet_size: *single_bet_size,
                                         locks: None,
                                     };
 
@@ -1449,7 +1377,7 @@ impl GameServer {
                                     .await?;
 
                                 // Clean up broadcast channel since rematch was rejected
-                                registry.cleanup_broadcast_channel(&game_id).await;
+                                registry.cleanup_broadcast_channel(game_id).await;
                             }
                         }
                     }
@@ -1463,7 +1391,7 @@ impl GameServer {
                     let game_message = GameMessage::Gif {
                         game_id: game_id.clone(),
                         player_id: player_id.clone(),
-                        gif_id: gif_id.clone(),
+                        gif_id,
                     };
 
                     let wrapper = GameMessageWrapper {
@@ -1502,7 +1430,7 @@ impl GameServer {
                                 .publish_message(game_id.clone(), wrapper, false)
                                 .await?;
 
-                            // / remove players from active state
+                            // remove players from active state
                             let mut active_players_write = registry.active_players.write().await;
 
                             let ids = players.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
@@ -1585,32 +1513,6 @@ impl GameServer {
         Ok(())
     }
 }
-
-// info!("Game update here");
-
-// if let GameState::FINISHED {
-//     loser_idx,
-//     players,
-//     single_bet_size,
-//     ..
-// } = msg
-// {
-//     // Update the db
-//     let winning_amount = single_bet_size / ((players.len() - 1) as f64);
-
-//     let user_ids: Vec<u32> = players
-//         .iter()
-//         .map(|p| p.id.parse::<u32>().unwrap())
-//         .collect();
-//     db::update_player_balances(
-//         &pool,
-//         &user_ids,
-//         loser_idx,
-//         single_bet_size,
-//         winning_amount,
-//     )
-//     .await?;
-// }
 
 // Helper function to parse HTTP headers from a byte slice
 fn parse_http_headers(data: &[u8]) -> Result<HashMap<String, HeaderValue>, anyhow::Error> {
