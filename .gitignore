@@ -2,3 +2,5 @@
 .env
 /frontend_request.md
 /treasury-keypair.json
+/frontend.txt
+/mines.db
