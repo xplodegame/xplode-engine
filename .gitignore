@@ -1,4 +1,4 @@
 /target
 .env
-frontend-request.md
-treasury-keypair.json
+/frontend_request.md
+/treasury-keypair.json
