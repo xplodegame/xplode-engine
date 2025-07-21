@@ -230,29 +230,6 @@ MagicBlock's ephemeral rollups have revolutionized our gaming experience, enabli
 - **Zero gas fees** for seamless user experience  
 - **Horizontal scaling** for massive multiplayer support
 
-## 🗺️ Future Roadmap
-
-### 🎯 Near-term (Q1-Q2 2025)
-- **Mobile App**: Native iOS/Android apps with Web3 wallet integration
-- **Advanced NFT System**: Animated NFTs, rarity tiers, and marketplace integration
-- **Tournament Infrastructure**: Automated tournaments with prize pools and leaderboards
-- **Multi-game Support**: Additional game modes beyond minesweeper
-- **Enhanced Matchmaking**: ELO-based skill matching and regional servers
-
-### 🚀 Medium-term (Q3-Q4 2025)  
-- **Cross-chain Integration**: Expand to additional MagicBlock-supported networks
-- **AI-Powered Features**: Smart opponent matching and gameplay analytics
-- **Social Features**: Friend systems, guilds, and team competitions  
-- **Streaming Integration**: Live gameplay streaming with NFT donations
-- **Custom Game Creation**: Player-designed game modes and rule sets
-
-### 🌟 Long-term (2026+)
-- **VR/AR Integration**: Immersive 3D minesweeper experiences
-- **DAO Governance**: Community-driven development and feature voting
-- **Educational Platform**: Tutorials and courses on blockchain gaming
-- **B2B Solutions**: White-label gaming infrastructure for other developers
-- **Metaverse Expansion**: Integration with virtual worlds and platforms
-
 > **🤝 Community-Driven Development**: We believe in building with our community. Join our Discord to influence the roadmap!
 
 ---
