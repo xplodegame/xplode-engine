@@ -1,5 +1,4 @@
-# 💣 Xplode - Blockchain Minesweeper Game
-
+# 💣 Xplode - On-Chain PvP Grid Engine for Strategy Games
 <div align="center">
 
 ![Xplode Game](https://img.shields.io/badge/Game-Xplode-blue?style=for-the-badge)
@@ -8,11 +7,21 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white)
 
-**A modern, blockchain-powered multiplayer minesweeper game with real cryptocurrency betting**
-
-[🎮 Play Now](https://playxplode.xyz) | [📺 Demo Video](https://x.com/xplode_game/status/1925801438573130082) | [🐦 Follow Us](https://x.com/xplode_game)
+[🎮 Play Now](https://playxplode.xyz) | [🐦 Follow Us](https://x.com/xplode_game)
 
 </div>
+
+---
+
+## 🚀 See Xplode in Action: Blazing-Fast On-Chain Gameplay
+
+<div align="center">
+  <video src="gameplay.mp4" autoplay muted controls width="700" poster="https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg">
+    Your browser does not support the video tag.
+  </video>
+</div>
+
+---
 
 ## 🚀 Overview
 
@@ -220,7 +229,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-**Shoutout to [MagicBlock](https://www.magicblock.xyz/) for making on-chain gaming real-time. This is the future 👇**
+**Shoutout to [MagicBlock](https://www.magicblock.xyz/) for making on-chain gaming real-time**
 
 <!-- Add your demo video here -->
 > **📹 [Watch Live Gameplay Demo]** - *Coming Soon: Embedded gameplay video showcasing sub-50ms on-chain moves*
