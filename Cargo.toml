@@ -1,5 +1,5 @@
 [workspace]
-members = [ "browser-wallet", "common", "evm-deposits",
+members = ["common", "evm-deposits",
     "server"  
 ]
 resolver = "2"
