@@ -31,7 +31,7 @@ Powered by [MagicBlock's](https://www.magicblock.xyz/) ephemeral rollups, Xplode
 - 💰 **Multi-Currency Support**: SOL, USDC betting with zero gas fees
 - 🔗 **Transparent Blockchain**: Every move recorded on Solana at Web2 speeds  
 - 🏆 **Competitive Gaming**: Leaderboards, PnL tracking, and tournament support
-- 🎨 **NFT Rewards**: Mint achievement NFTs for special accomplishments
+- 🎨 **NFT Messaging**: Mint special NFTs for in-game communication and expressions
 - 🔐 **Provably Fair**: Cryptographically secure random number generation
 
 ## 🏗️ Architecture
@@ -59,28 +59,33 @@ graph TB
 
 | Service | Port | Description |
 |---------|------|-------------|
-| **Game Server** | 3000 | WebSocket-based multiplayer game logic |
+| **Game Server** | 3000 | WebSocket-based multiplayer game logic with geo-localized matchmaking |
 | **Wallet Server** | 8080 | HTTP API for deposits, withdrawals, user management, and transaction handling |
 | **Deposit Worker** | - | Background service for processing blockchain deposits |
+| **Discovery Service** | - | Redis-based service for intelligent server routing and player matchmaking |
 
 ## 🎮 How It Works
 
-1. **Game Creation**: Players create or join game rooms with customizable parameters
-2. **Betting**: Set bet amounts in supported cryptocurrencies (SOL, USDC)
-3. **Lightning Gameplay**: Take turns revealing cells in a minesweeper grid with sub-50ms response times
-4. **Instant Blockchain Recording**: Each move is recorded on Solana blockchain via MagicBlock's ephemeral rollups
-5. **Real-time Settlement**: Winners receive the pot instantly with zero gas fees
-6. **NFT Rewards**: Special achievements unlock instant NFT rewards
+1. **Blazing-Fast Matchmaking**: Intelligent server localization redirects players to servers closest to game creators
+2. **Game Creation**: Players create or join game rooms with customizable parameters
+3. **Betting**: Set bet amounts in supported cryptocurrencies (SOL, USDC)
+4. **Lightning Gameplay**: Take turns revealing cells in a minesweeper grid with sub-50ms response times
+5. **Instant Blockchain Recording**: Each move is recorded on Solana blockchain via MagicBlock's ephemeral rollups
+6. **Real-time Settlement**: Winners receive the pot instantly with zero gas fees
+7. **NFT Messaging**: Mint special NFTs for in-game communication and player expressions
+8. **Instant Rematch**: Real-time rematch confirmations feel almost instantaneous
 
 > **🚀 LIVE on Devnet!** Experience the future of on-chain gaming with Web2-level performance.
 
 ### 🎯 Game Mechanics
 
-- **Grid Sizes**: Customizable from small (8x8) to large grids
+- **Intelligent Matchmaking**: Server localization for optimal latency based on game creator location
+- **Grid Sizes**: Customizable from small (8x8) to large grids  
 - **Bomb Density**: Adjustable number of mines per game
 - **Turn-Based**: Players alternate moves until someone hits a mine
 - **Time Limits**: Configurable time limits to keep games moving
-- **Rematch System**: Quick rematch functionality for continued play
+- **Instant Rematch**: Real-time rematch confirmations with sub-second response times
+- **NFT Communication**: Express yourself through mintable in-game NFT messages
 
 ## 🛠️ Technology Stack
 
@@ -97,11 +102,12 @@ graph TB
 - **Anchor Framework**: Smart contract development
 - **Xplode Moves API**: Custom game state management
 
-### Infrastructure
-- **Containerization**: Docker
-- **Deployment**: Fly.io
+### Infrastructure  
+- **Containerization**: Docker with multi-region deployment
+- **Deployment**: Fly.io with intelligent server localization
 - **Monitoring**: Built-in health checks and metrics
-- **Scalability**: Horizontal scaling with Redis-based discovery
+- **Scalability**: Horizontal scaling with Redis-based discovery and geo-routing
+- **Load Balancing**: Smart player routing to optimal game servers
 
 ### Blockchain Integration
 - **MagicBlock Ephemeral Rollups**: Sub-50ms latency for real-time on-chain gaming
@@ -158,16 +164,16 @@ cd wallet && cargo run
 - **USDC**: USD Coin stable currency
 
 ### Game Modes
-- **Quick Match**: Instant matchmaking with similar bet sizes
-- **Private Rooms**: Create custom games with friends
-- **Tournaments**: Structured competitive events
-- **Practice Mode**: Free play for learning
+- **Quick Match**: Blazing-fast matchmaking with intelligent server localization
+- **Private Rooms**: Create custom games with friends on optimized servers
+- **Tournaments**: Structured competitive events with real-time progression
+- **Practice Mode**: Free play for learning without gas fees
 
-### Achievements & NFTs
-- **First Win**: Complete your first successful game
-- **Streak Master**: Win multiple games in a row
-- **Big Spender**: Reach high betting tiers
-- **Community Champion**: Top leaderboard positions
+### NFT Communication System
+- **Express Emotions**: Mint GIF-based NFTs for in-game reactions
+- **Player Interactions**: Send NFT messages during gameplay
+- **Community Building**: Collect and trade unique communication NFTs
+- **Achievement Unlocks**: Special NFTs for gameplay milestones
 
 ## 🔒 Security Features
 
@@ -223,6 +229,31 @@ MagicBlock's ephemeral rollups have revolutionized our gaming experience, enabli
 - **Sub-50ms latency** for real-time blockchain gaming
 - **Zero gas fees** for seamless user experience  
 - **Horizontal scaling** for massive multiplayer support
+
+## 🗺️ Future Roadmap
+
+### 🎯 Near-term (Q1-Q2 2025)
+- **Mobile App**: Native iOS/Android apps with Web3 wallet integration
+- **Advanced NFT System**: Animated NFTs, rarity tiers, and marketplace integration
+- **Tournament Infrastructure**: Automated tournaments with prize pools and leaderboards
+- **Multi-game Support**: Additional game modes beyond minesweeper
+- **Enhanced Matchmaking**: ELO-based skill matching and regional servers
+
+### 🚀 Medium-term (Q3-Q4 2025)  
+- **Cross-chain Integration**: Expand to additional MagicBlock-supported networks
+- **AI-Powered Features**: Smart opponent matching and gameplay analytics
+- **Social Features**: Friend systems, guilds, and team competitions  
+- **Streaming Integration**: Live gameplay streaming with NFT donations
+- **Custom Game Creation**: Player-designed game modes and rule sets
+
+### 🌟 Long-term (2026+)
+- **VR/AR Integration**: Immersive 3D minesweeper experiences
+- **DAO Governance**: Community-driven development and feature voting
+- **Educational Platform**: Tutorials and courses on blockchain gaming
+- **B2B Solutions**: White-label gaming infrastructure for other developers
+- **Metaverse Expansion**: Integration with virtual worlds and platforms
+
+> **🤝 Community-Driven Development**: We believe in building with our community. Join our Discord to influence the roadmap!
 
 ---
 
