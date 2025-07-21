@@ -16,7 +16,7 @@
 ## 🚀 See Xplode in Action: Blazing-Fast On-Chain Gameplay
 
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/b46e8d4e-612e-48b0-83fb-9ccabb631744" autoplay muted controls width="700">
+  <video src="https://github.com/user-attachments/assets/a7422acc-77e1-43f4-b99e-f58c62d5ead0" autoplay muted controls width="700">
     Your browser does not support the video tag.
   </video>
 </div>
