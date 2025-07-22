@@ -243,15 +243,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Shoutout to [MagicBlock](https://www.magicblock.xyz/) for making on-chain gaming real-time**
 
-<!-- Add your demo video here -->
-> **📹 [Watch Live Gameplay Demo]** - *Coming Soon: Embedded gameplay video showcasing sub-50ms on-chain moves*
-
 MagicBlock's ephemeral rollups have revolutionized our gaming experience, enabling:
 - **Sub-50ms latency** for real-time blockchain gaming
 - **Zero gas fees** for seamless user experience  
 - **Horizontal scaling** for massive multiplayer support
 
-> **🤝 Community-Driven Development**: We believe in building with our community. Join our Discord to influence the roadmap!
 
 ---
 
