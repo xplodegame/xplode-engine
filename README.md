@@ -21,9 +21,19 @@
   </video>
   <br>
   <a href="https://youtu.be/nCQNYAVkEmM" target="_blank">
-    ▶️ Watch the full gameplay demo on YouTube
+    ▶️ Watch this sneak peek on YouTube
   </a>
 </div>
+
+<p align="center"><em>This is a quick glimpse showing how fast moves are recorded on-chain with Xplode and MagicBlock.</em></p>
+
+---
+
+## 🎥 Full End-to-End Gameplay
+
+👉 [Watch the complete end-to-end gameplay on X (Twitter)](https://x.com/magicblock/status/1927010358171988441)
+
+*See the entire Xplode experience, from start to finish, as featured by MagicBlock!*
 
 ---
 
