@@ -25,8 +25,6 @@
   </a>
 </div>
 
-<p align="center"><em>This is a quick glimpse showing how fast moves are recorded on-chain with Xplode and MagicBlock.</em></p>
-
 ---
 
 ## 🎥 Full End-to-End Gameplay
