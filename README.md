@@ -58,22 +58,87 @@ Powered by [MagicBlock's](https://www.magicblock.xyz/) ephemeral rollups, Xplode
 ## 🏗️ Architecture
 
 ```mermaid
-graph TB
-    Client[Web Client] --> GameServer[Game Server]
-    Client --> WalletServer[Wallet Server]
-    
-    GameServer --> Redis[Redis Cache]
-    GameServer --> DB[(PostgreSQL)]
-    GameServer --> XplodeMoves[Xplode Moves API]
-    
-    WalletServer --> DB
-    WalletServer --> SolanaRPC[Solana RPC]
-    WalletServer --> EVMDeposits[EVM Deposits]
-    
-    DepositWorker[Deposit BG Worker] --> DB
-    DepositWorker --> SolanaRPC
-    
-    XplodeMoves --> Solana[Solana Blockchain]
+graph TD
+
+%% Client Layer
+subgraph Client Layer
+    Client[Web Client]
+end
+
+%% Game Server
+subgraph Game Server
+    GS_API[REST/WebSocket API]
+    GS_Engine[Game Engine]
+    GS_Cache[Redis Interface]
+    GS_DB[DB Interface]
+    GS_Xplode[Xplode Moves Client]
+end
+
+%% Wallet Server
+subgraph Wallet Server
+    WS_API[REST API]
+    WS_DB[DB Interface]
+    WS_Solana[Solana Adapter]
+    WS_EVM[EVM Adapter]
+end
+
+%% Worker
+subgraph Worker
+    DepositWorker[Deposit BG Worker]
+end
+
+%% Infra Layer
+subgraph Infra
+    Redis[Redis Cache]
+    DB[(PostgreSQL DB)]
+end
+
+%% External Services
+subgraph External Services
+    XplodeMoves[Xplode Moves API]
+    SolanaRPC[Solana RPC Node]
+    EVMDeposits[EVM Bridge]
+end
+
+%% Ephemeral Rollup Layer
+subgraph Ephemeral Rollup Layer
+    RollupClient[Ephemeral Rollup Client]
+    EphemeralRollup[Ephemeral Rollup Node]
+end
+
+%% Blockchain
+subgraph Blockchain
+    Solana[Solana Blockchain]
+end
+
+%% Client Connections
+Client --> GS_API
+Client --> WS_API
+
+%% Game Server Flow
+GS_API --> GS_Engine
+GS_Engine --> GS_Cache
+GS_Engine --> GS_DB
+GS_Engine --> GS_Xplode
+GS_Cache --> Redis
+GS_DB --> DB
+GS_Xplode --> XplodeMoves
+XplodeMoves --> RollupClient
+RollupClient --> EphemeralRollup
+EphemeralRollup --> Solana
+
+%% Wallet Server Flow
+WS_API --> WS_DB
+WS_API --> WS_Solana
+WS_API --> WS_EVM
+WS_DB --> DB
+WS_Solana --> SolanaRPC
+WS_EVM --> EVMDeposits
+
+%% Worker Flow
+DepositWorker --> DB
+DepositWorker --> SolanaRPC
+
 ```
 
 ### 🔧 Core Services
